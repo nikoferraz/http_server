@@ -17,8 +17,11 @@ class HTTPServer {
     private int servlet_count = 0;
     private ArrayList<Servlet> servlets = new ArrayList<Servlet>(1);
     private boolean interactive_mode = false;
+    private Scanner scanner; // Fix #6: Single Scanner instance for entire program
 
-    HTTPServer(){}
+    HTTPServer(){
+        this.scanner = new Scanner(System.in);
+    }
 
     public static void main(String[] args) throws IOException {
         HTTPServer server = new HTTPServer();
@@ -28,14 +31,14 @@ class HTTPServer {
         }
         server.interactive_mode = true;
         String input = "";
-        Scanner scan = new Scanner(System.in);
         System.out.println("Enter a command or type 'help' for list of available commands.");
         while(!input.equals("exit")){
 
-            input = scan.nextLine();
+            input = server.scanner.nextLine();
             server.handleInput(input);
 
         }
+        server.scanner.close(); // Fix #6: Close scanner when done
         return;
     }
 
@@ -129,7 +132,7 @@ class HTTPServer {
         String[] params = input.split(" ");
         int param_length = params.length;
         //Parse the input.
-        Scanner scan = new Scanner(System.in);
+        // Fix #6: Use shared scanner instance instead of creating new ones
         if(input.equals("exit")){
             System.exit(0);
         } else if(input.equals("help")){
@@ -147,9 +150,9 @@ class HTTPServer {
         }else if(params[0].equals("create")){
             if(param_length == 1){
                 System.out.println("Please enter the web root directory for the new servlet: ");
-                webroot = getWebroot(scan.nextLine());
+                webroot = getWebroot(scanner.nextLine());
                 System.out.println("Please enter the port number for the new servlet: ");
-                port = Integer.parseInt(scan.nextLine());
+                port = Integer.parseInt(scanner.nextLine());
             } else if(param_length == 2){
                 webroot = getWebroot(params[1]);
                 port = getAvailablePort(80);
@@ -214,9 +217,9 @@ class HTTPServer {
             System.err.println("Error: invalid directory.");
             System.exit(0);
         }
+        // Fix #6: Use shared scanner instance instead of creating new one
         while(!isDirectory && interactive_mode){
             System.out.println("The path provided does not point to a valid directory. Enter a valid path: ");
-            Scanner scanner = new Scanner(System.in);
             path = scanner.nextLine();
             webroot = new File(path);
             isDirectory = webroot.isDirectory();
