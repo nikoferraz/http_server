@@ -7,10 +7,14 @@ import java.util.logging.FileHandler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.logging.SimpleFormatter;
+import java.net.SocketTimeoutException;
 
 public class Servlet extends Thread{
 
-    private ExecutorService thread_pool = Executors.newFixedThreadPool(20);
+    private static final int THREAD_POOL_SIZE = 20;
+    private static final int REQUEST_QUEUE_LIMIT = 100;
+    private static final long REQUEST_TIMEOUT_MINUTES = 5;
+    private ExecutorService thread_pool = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
     File webroot;
     int port = 0;
     private Boolean run = true;
@@ -38,16 +42,23 @@ public class Servlet extends Thread{
         setAuditLogHandler();
         System.out.println("The root folder is: " + webroot.toString() + "\r\n");
         System.out.println("Starting server on port " + port + " ...\r\n");
-        try (ServerSocket mainSocket = new ServerSocket(port)) {
+        try (ServerSocket mainSocket = new ServerSocket(port, REQUEST_QUEUE_LIMIT)) {
+            // Fix #4: Add socket timeout to periodically check run flag
+            mainSocket.setSoTimeout(1000); // 1 second timeout
             do{
                 System.out.print("\r\n");
-                Socket socket = mainSocket.accept();
-                if(!thread_pool.isShutdown()){
-                    Runnable new_request = new ProcessRequest(webroot, socket, auditLog);
-                    thread_pool.submit(new_request);
-                } else{
-                    socket.close();
-                    break;
+                try {
+                    Socket socket = mainSocket.accept();
+                    if(!thread_pool.isShutdown()){
+                        Runnable new_request = new ProcessRequest(webroot, socket, auditLog);
+                        thread_pool.submit(new_request);
+                    } else{
+                        socket.close();
+                        break;
+                    }
+                } catch (SocketTimeoutException e) {
+                    // Timeout occurred, loop will check run flag and continue
+                    continue;
                 }
             }while(run);
         } catch (IOException exception){
