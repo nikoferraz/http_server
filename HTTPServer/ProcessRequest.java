@@ -13,6 +13,8 @@ import java.util.logging.Logger;
 
 class ProcessRequest implements Runnable {
 
+    private static final int MAX_REQUEST_SIZE = 8192; // 8KB max request size
+    private static final int REQUEST_TIMEOUT_MS = 5000; // 5 second timeout
     private static File webroot;
     private final Socket socket;
     private Logger auditLog;
@@ -27,15 +29,26 @@ class ProcessRequest implements Runnable {
     @Override
     public void run() {
         try {
+            socket.setSoTimeout(REQUEST_TIMEOUT_MS);
             Reader inputStream = new InputStreamReader(new BufferedInputStream(socket.getInputStream()), StandardCharsets.UTF_8);
             StringBuilder requestText = new StringBuilder();
-            while (true) {
-                int ch = inputStream.read();
+            int ch;
+            while ((ch = inputStream.read()) != -1 && requestText.length() < MAX_REQUEST_SIZE) {
                 if (ch == '\r' || ch == '\n')
                     break;
                 requestText.append((char) ch);
             }
-            routeRequest(requestText.toString().split("\\s+"));
+
+            if (requestText.length() >= MAX_REQUEST_SIZE) {
+                throw new IOException("Request size exceeds maximum allowed size");
+            }
+
+            String[] parts = requestText.toString().split("\\s+");
+            if (parts.length < 2) {
+                throw new IOException("Invalid HTTP request format");
+            }
+
+            routeRequest(parts);
         } catch (UnsupportedEncodingException e) {
             e.printStackTrace();
         } catch (IOException e) {
