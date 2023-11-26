@@ -5,6 +5,8 @@ import java.net.Socket;
 import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -63,12 +65,33 @@ class ProcessRequest implements Runnable {
     }
 
     public void routeRequest(String[] requestHeader) throws IOException {
+        // Array bounds checking
+        if (requestHeader.length < 2) {
+            throw new IOException("Invalid HTTP request: missing method or path");
+        }
+
         String fileName = requestHeader[1];
         //if(fileName == ""){ emptyRequest()}; Handle default file, such as index.html or 404.
         fileName = fileName.substring(1);
+
+        // Path traversal validation - normalize and validate BEFORE file construction
+        Path requestedPath = validateAndNormalizePath(fileName);
+        if (requestedPath == null) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                String version = (requestHeader.length > 2) ? requestHeader[2] : "";
+                resourceNotFound(writer, version);
+            }
+            return;
+        }
+
         String mimeType = URLConnection.getFileNameMap().getContentTypeFor(fileName);
+        // Default MIME type if null
+        if (mimeType == null) {
+            mimeType = "application/octet-stream";
+        }
         String version = "";
-        File file = new File(webroot, fileName);
+        File file = requestedPath.toFile();
         System.out.println("Requesting resource: " + fileName+ "\r\n");
         System.out.println("The file mimetype is  " + mimeType+ "\r\n");
         if (requestHeader.length > 2) {
@@ -167,5 +190,36 @@ class ProcessRequest implements Runnable {
         auditLog.info(logInfo);
 
         return;
+    }
+
+    private Path validateAndNormalizePath(String fileName) {
+        try {
+            // Reject paths containing directory traversal attempts
+            if (fileName.contains("..")) {
+                System.err.println("Path traversal attempt detected: " + fileName);
+                return null;
+            }
+
+            // Normalize the path
+            Path requestedPath = Paths.get(webroot.getCanonicalPath(), fileName).normalize();
+            Path webrootPath = Paths.get(webroot.getCanonicalPath()).normalize();
+
+            // Verify the resolved path is within the webroot
+            if (!requestedPath.startsWith(webrootPath)) {
+                System.err.println("Path outside webroot: " + requestedPath);
+                return null;
+            }
+
+            // Reject absolute paths
+            if (Paths.get(fileName).isAbsolute()) {
+                System.err.println("Absolute path rejected: " + fileName);
+                return null;
+            }
+
+            return requestedPath;
+        } catch (IOException e) {
+            System.err.println("Error validating path: " + e.getMessage());
+            return null;
+        }
     }
 }
