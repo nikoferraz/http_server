@@ -17,6 +17,7 @@ class ProcessRequest implements Runnable {
 
     private static final int MAX_REQUEST_SIZE = 8192; // 8KB max request size
     private static final int REQUEST_TIMEOUT_MS = 5000; // 5 second timeout
+    private static final long MAX_FILE_SIZE = 1073741824L; // 1GB max file size
     private static File webroot;
     private final Socket socket;
     private Logger auditLog;
@@ -98,6 +99,18 @@ class ProcessRequest implements Runnable {
             version = requestHeader[2];
         }
         try {
+            // Check file size before processing
+            if (file.length() > MAX_FILE_SIZE) {
+                try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                     Writer writer = new OutputStreamWriter(outputStream)) {
+                    writer.write("HTTP/1.0 413 Payload Too Large\r\n");
+                    writer.write("Content-type: text/plain\r\n\r\n");
+                    writer.write("File size exceeds maximum allowed size\r\n");
+                    writer.flush();
+                }
+                return;
+            }
+
             OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
             Writer writer = new OutputStreamWriter(outputStream);
             if (!file.canRead() || !file.getCanonicalPath().startsWith(webroot.getCanonicalPath())) {
@@ -131,26 +144,35 @@ class ProcessRequest implements Runnable {
 
     private void HTTPGet(OutputStream outputStream, Writer writer, File file, String mimeType, String version)
             throws IOException {
-        byte[] rawData = Files.readAllBytes(file.toPath());
+        long fileLength = file.length();
         String code = "404";
         if (version.startsWith("HTTP/")) {
-            sendHeader(writer, "HTTP/1.0 200 OK", mimeType, rawData.length);
+            sendHeader(writer, "HTTP/1.0 200 OK", mimeType, (int) fileLength);
             code = "200";
         }
-        logRequest("GET", file.getName(), "HTTP/1.0", code, rawData.length);
-        outputStream.write(rawData);
+
+        // Stream file in chunks to prevent memory exhaustion
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] buffer = new byte[8192];
+            int bytesRead;
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                outputStream.write(buffer, 0, bytesRead);
+            }
+        }
+
+        logRequest("GET", file.getName(), "HTTP/1.0", code, (int) fileLength);
         outputStream.flush();
         return;
     }
 
     private void HTTPHead(Writer writer, File file, String mimeType, String version) throws IOException {
-        byte[] rawData = Files.readAllBytes(file.toPath());
+        long fileLength = file.length();
         String code = "404";
         if (version.startsWith("HTTP/")) {
-            sendHeader(writer, "HTTP/1.0 204 OK", mimeType, rawData.length);
-            code = "204";
+            sendHeader(writer, "HTTP/1.0 200 OK", mimeType, (int) fileLength);
+            code = "200";
         }
-        logRequest("HEAD", file.getName(), "HTTP/1.0", code, rawData.length);
+        logRequest("HEAD", file.getName(), "HTTP/1.0", code, (int) fileLength);
         return;
     }
 
