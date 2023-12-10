@@ -124,6 +124,7 @@ class ProcessRequest implements Runnable {
                     break;
                 case "HEAD":
                     HTTPHead(writer, file, mimeType, version);
+                    break;
                 default:
                     invalidVerb(verb);
                     break;
