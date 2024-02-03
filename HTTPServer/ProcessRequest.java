@@ -18,7 +18,7 @@ class ProcessRequest implements Runnable {
     private static final int MAX_REQUEST_SIZE = 8192; // 8KB max request size
     private static final int REQUEST_TIMEOUT_MS = 5000; // 5 second timeout
     private static final long MAX_FILE_SIZE = 1073741824L; // 1GB max file size
-    private static File webroot;
+    private final File webroot;
     private final Socket socket;
     private Logger auditLog;
 
@@ -163,7 +163,6 @@ class ProcessRequest implements Runnable {
 
         logRequest("GET", file.getName(), "HTTP/1.0", code, (int) fileLength);
         outputStream.flush();
-        return;
     }
 
     private void HTTPHead(Writer writer, File file, String mimeType, String version) throws IOException {
@@ -174,7 +173,6 @@ class ProcessRequest implements Runnable {
             code = "200";
         }
         logRequest("HEAD", file.getName(), "HTTP/1.0", code, (int) fileLength);
-        return;
     }
 
     public void invalidVerb(String verb) {
@@ -211,8 +209,6 @@ class ProcessRequest implements Runnable {
         logInfo += "[" + formattedTime + "]";
         logInfo += " \"" + verb + "/" + fileName + "/" + version + "\" " + code + " " + bytes;
         auditLog.info(logInfo);
-
-        return;
     }
 
     private Path validateAndNormalizePath(String fileName) {
