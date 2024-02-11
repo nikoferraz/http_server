@@ -87,7 +87,7 @@ class HTTPServer {
         port = getAvailablePort(port);
         Servlet servlet = new Servlet(webroot, port, servlet_count);
         servlets.add(servlet);
-        if(!false){
+        if(start){
             servlet.start();
         }
         servlet_count += 1;
