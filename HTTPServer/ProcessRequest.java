@@ -73,6 +73,17 @@ class ProcessRequest implements Runnable {
 
         String fileName = requestHeader[1];
         //if(fileName == ""){ emptyRequest()}; Handle default file, such as index.html or 404.
+
+        // Handle root path requests - serve index.html or return 404
+        if (fileName == null || fileName.isEmpty() || fileName.equals("/")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                String version = (requestHeader.length > 2) ? requestHeader[2] : "";
+                resourceNotFound(writer, version);
+            }
+            return;
+        }
+
         fileName = fileName.substring(1);
 
         // Path traversal validation - normalize and validate BEFORE file construction
