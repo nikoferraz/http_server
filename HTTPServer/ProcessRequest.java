@@ -10,7 +10,10 @@ import java.nio.file.Paths;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Base64;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.logging.Logger;
 
 class ProcessRequest implements Runnable {
@@ -18,6 +21,11 @@ class ProcessRequest implements Runnable {
     private static final int MAX_REQUEST_SIZE = 8192; // 8KB max request size
     private static final int REQUEST_TIMEOUT_MS = 5000; // 5 second timeout
     private static final long MAX_FILE_SIZE = 1073741824L; // 1GB max file size
+    private static final Map<String, String> VALID_CREDENTIALS = new HashMap<>();
+    static {
+        // Initialize default credentials - user: admin, password: password
+        VALID_CREDENTIALS.put("admin", "password");
+    }
     private final File webroot;
     private final Socket socket;
     private Logger auditLog;
@@ -51,7 +59,33 @@ class ProcessRequest implements Runnable {
                 throw new IOException("Invalid HTTP request format");
             }
 
-            routeRequest(parts);
+            // Read HTTP headers to extract Authorization
+            Map<String, String> headers = new HashMap<>();
+            StringBuilder headerLine = new StringBuilder();
+            while ((ch = inputStream.read()) != -1) {
+                if (ch == '\r') {
+                    int next = inputStream.read();
+                    if (next == '\n') {
+                        if (headerLine.length() == 0) {
+                            break; // End of headers
+                        }
+                        String header = headerLine.toString();
+                        int colonIndex = header.indexOf(':');
+                        if (colonIndex > 0) {
+                            String name = header.substring(0, colonIndex).trim();
+                            String value = header.substring(colonIndex + 1).trim();
+                            headers.put(name.toLowerCase(), value);
+                        }
+                        headerLine = new StringBuilder();
+                    } else if (next != -1) {
+                        headerLine.append((char) ch).append((char) next);
+                    }
+                } else if (ch != '\n') {
+                    headerLine.append((char) ch);
+                }
+            }
+
+            routeRequest(parts, headers);
         } catch (UnsupportedEncodingException e) {
             e.printStackTrace();
         } catch (IOException e) {
@@ -65,10 +99,19 @@ class ProcessRequest implements Runnable {
         }
     }
 
-    public void routeRequest(String[] requestHeader) throws IOException {
+    public void routeRequest(String[] requestHeader, Map<String, String> headers) throws IOException {
         // Array bounds checking
         if (requestHeader.length < 2) {
             throw new IOException("Invalid HTTP request: missing method or path");
+        }
+
+        // Check authentication
+        if (!validateBasicAuth(headers)) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                sendUnauthorizedResponse(writer);
+            }
+            return;
         }
 
         String fileName = requestHeader[1];
@@ -251,5 +294,60 @@ class ProcessRequest implements Runnable {
             System.err.println("Error validating path: " + e.getMessage());
             return null;
         }
+    }
+
+    private boolean validateBasicAuth(Map<String, String> headers) {
+        String authHeader = headers.get("authorization");
+
+        // No authorization header - unauthorized
+        if (authHeader == null || authHeader.isEmpty()) {
+            return false;
+        }
+
+        // Check if it's Basic auth
+        if (!authHeader.startsWith("Basic ")) {
+            return false;
+        }
+
+        try {
+            // Extract and decode the Base64 credentials
+            String encodedCredentials = authHeader.substring(6);
+            String decodedCredentials = new String(Base64.getDecoder().decode(encodedCredentials), StandardCharsets.UTF_8);
+
+            int colonIndex = decodedCredentials.indexOf(':');
+            if (colonIndex <= 0) {
+                return false;
+            }
+
+            String username = decodedCredentials.substring(0, colonIndex);
+            String password = decodedCredentials.substring(colonIndex + 1);
+
+            // Validate against credentials map
+            String validPassword = VALID_CREDENTIALS.get(username);
+            if (validPassword != null && validPassword.equals(password)) {
+                auditLog.info("Authentication successful for user: " + username);
+                return true;
+            }
+
+            auditLog.warning("Authentication failed for user: " + username);
+            return false;
+        } catch (IllegalArgumentException e) {
+            System.err.println("Invalid Base64 encoding in Authorization header");
+            return false;
+        }
+    }
+
+    private void sendUnauthorizedResponse(Writer writer) throws IOException {
+        String response = "<HTML>\r\n<head><title>Unauthorized</title></head>\r\n"
+                + "<body><h1>401 Unauthorized</h1>\r\n"
+                + "<p>Please provide valid credentials using Basic Authentication.</p>\r\n"
+                + "</body></html>\r\n";
+
+        writer.write("HTTP/1.0 401 Unauthorized\r\n");
+        writer.write("WWW-Authenticate: Basic realm=\"HTTP Server\"\r\n");
+        writer.write("Content-type: text/html; charset=utf-8\r\n");
+        writer.write("Content-length: " + response.length() + "\r\n\r\n");
+        writer.write(response);
+        writer.flush();
     }
 }
