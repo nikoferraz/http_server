@@ -41,47 +41,28 @@ class ProcessRequest implements Runnable {
     public void run() {
         try {
             socket.setSoTimeout(REQUEST_TIMEOUT_MS);
-            Reader inputStream = new InputStreamReader(new BufferedInputStream(socket.getInputStream()), StandardCharsets.UTF_8);
-            StringBuilder requestText = new StringBuilder();
-            int ch;
-            while ((ch = inputStream.read()) != -1 && requestText.length() < MAX_REQUEST_SIZE) {
-                if (ch == '\r' || ch == '\n')
-                    break;
-                requestText.append((char) ch);
+            BufferedReader inputStream = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+
+            // Read the request line
+            String requestLine = inputStream.readLine();
+            if (requestLine == null || requestLine.isEmpty() || requestLine.length() >= MAX_REQUEST_SIZE) {
+                throw new IOException("Invalid HTTP request format");
             }
 
-            if (requestText.length() >= MAX_REQUEST_SIZE) {
-                throw new IOException("Request size exceeds maximum allowed size");
-            }
-
-            String[] parts = requestText.toString().split("\\s+");
+            String[] parts = requestLine.split("\\s+");
             if (parts.length < 2) {
                 throw new IOException("Invalid HTTP request format");
             }
 
             // Read HTTP headers to extract Authorization
             Map<String, String> headers = new HashMap<>();
-            StringBuilder headerLine = new StringBuilder();
-            while ((ch = inputStream.read()) != -1) {
-                if (ch == '\r') {
-                    int next = inputStream.read();
-                    if (next == '\n') {
-                        if (headerLine.length() == 0) {
-                            break; // End of headers
-                        }
-                        String header = headerLine.toString();
-                        int colonIndex = header.indexOf(':');
-                        if (colonIndex > 0) {
-                            String name = header.substring(0, colonIndex).trim();
-                            String value = header.substring(colonIndex + 1).trim();
-                            headers.put(name.toLowerCase(), value);
-                        }
-                        headerLine = new StringBuilder();
-                    } else if (next != -1) {
-                        headerLine.append((char) ch).append((char) next);
-                    }
-                } else if (ch != '\n') {
-                    headerLine.append((char) ch);
+            String headerLine;
+            while ((headerLine = inputStream.readLine()) != null && !headerLine.isEmpty()) {
+                int colonIndex = headerLine.indexOf(':');
+                if (colonIndex > 0) {
+                    String name = headerLine.substring(0, colonIndex).trim();
+                    String value = headerLine.substring(colonIndex + 1).trim();
+                    headers.put(name.toLowerCase(), value);
                 }
             }
 
@@ -105,15 +86,6 @@ class ProcessRequest implements Runnable {
             throw new IOException("Invalid HTTP request: missing method or path");
         }
 
-        // Check authentication
-        if (!validateBasicAuth(headers)) {
-            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
-                 Writer writer = new OutputStreamWriter(outputStream)) {
-                sendUnauthorizedResponse(writer);
-            }
-            return;
-        }
-
         String fileName = requestHeader[1];
         //if(fileName == ""){ emptyRequest()}; Handle default file, such as index.html or 404.
 
@@ -129,13 +101,22 @@ class ProcessRequest implements Runnable {
 
         fileName = fileName.substring(1);
 
-        // Path traversal validation - normalize and validate BEFORE file construction
+        // Path traversal validation - normalize and validate BEFORE authentication
         Path requestedPath = validateAndNormalizePath(fileName);
         if (requestedPath == null) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
                 String version = (requestHeader.length > 2) ? requestHeader[2] : "";
                 resourceNotFound(writer, version);
+            }
+            return;
+        }
+
+        // Check authentication AFTER path validation to prevent information disclosure
+        if (!validateBasicAuth(headers)) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                sendUnauthorizedResponse(writer);
             }
             return;
         }
@@ -165,23 +146,29 @@ class ProcessRequest implements Runnable {
                 return;
             }
 
-            OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
-            Writer writer = new OutputStreamWriter(outputStream);
-            if (!file.canRead() || !file.getCanonicalPath().startsWith(webroot.getCanonicalPath())) {
-                resourceNotFound(writer, version);
+            // Check if file is readable - validateAndNormalizePath already checked path safety
+            if (!file.canRead()) {
+                try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                     Writer writer = new OutputStreamWriter(outputStream)) {
+                    resourceNotFound(writer, version);
+                }
                 return;
             }
-            String verb = requestHeader[0];
-            switch (verb) {
-                case "GET":
-                    HTTPGet(outputStream, writer, file, mimeType, version);
-                    break;
-                case "HEAD":
-                    HTTPHead(writer, file, mimeType, version);
-                    break;
-                default:
-                    invalidVerb(verb);
-                    break;
+
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                String verb = requestHeader[0];
+                switch (verb) {
+                    case "GET":
+                        HTTPGet(outputStream, writer, file, mimeType, version);
+                        break;
+                    case "HEAD":
+                        HTTPHead(writer, file, mimeType, version);
+                        break;
+                    default:
+                        invalidVerb(writer, version);
+                        break;
+                }
             }
         } catch (UnsupportedEncodingException e) {
             e.printStackTrace();
@@ -229,8 +216,20 @@ class ProcessRequest implements Runnable {
         logRequest("HEAD", file.getName(), "HTTP/1.0", code, (int) fileLength);
     }
 
-    public void invalidVerb(String verb) {
-        System.out.println("The verb " + verb + "is not valid or has not been implemented.\r\n");
+    public void invalidVerb(Writer writer, String version) throws IOException {
+        String response = "<HTML>\r\n<head><title>Method Not Allowed</title></head>\r\n"
+                + "<body><h1>405 Method Not Allowed</h1>\r\n"
+                + "<p>The HTTP method used is not supported by this server.</p>\r\n"
+                + "</body></html>\r\n";
+
+        if (version.startsWith("HTTP/")) {
+            writer.write("HTTP/1.0 405 Method Not Allowed\r\n");
+            writer.write("Allow: GET, HEAD\r\n");
+            writer.write("Content-type: text/html; charset=utf-8\r\n");
+            writer.write("Content-length: " + response.length() + "\r\n\r\n");
+        }
+        writer.write(response);
+        writer.flush();
     }
 
     public void resourceNotFound(Writer writer, String version) throws IOException {
