@@ -49,10 +49,11 @@ public class Servlet extends Thread{
                 System.out.print("\r\n");
                 try {
                     Socket socket = mainSocket.accept();
-                    if(!thread_pool.isShutdown()){
+                    try {
                         Runnable new_request = new ProcessRequest(webroot, socket, auditLog);
                         thread_pool.submit(new_request);
-                    } else{
+                    } catch (RejectedExecutionException e) {
+                        // Thread pool is shutdown, close socket and exit loop
                         socket.close();
                         break;
                     }
