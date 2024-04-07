@@ -14,32 +14,38 @@ import java.util.Scanner;
 
 class HTTPServer {
 
-    private int servlet_count = 0;
+    private static final int MIN_PORT = 1;
+    private static final int MAX_PORT = 65535;
+    private int servletCount = 0;
     private ArrayList<Servlet> servlets = new ArrayList<Servlet>(1);
-    private boolean interactive_mode = false;
+    private boolean interactiveMode = false;
     private Scanner scanner; // Fix #6: Single Scanner instance for entire program
 
     HTTPServer(){
         this.scanner = new Scanner(System.in);
     }
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) {
         HTTPServer server = new HTTPServer();
         if(args.length > 0){
             server.handleArgs(args);
             return;
         }
-        server.interactive_mode = true;
+        server.interactiveMode = true;
         String input = "";
         System.out.println("Enter a command or type 'help' for list of available commands.");
         while(!input.equals("exit")){
 
             input = server.scanner.nextLine();
-            server.handleInput(input);
+            try {
+                server.handleInput(input);
+            } catch (IOException e) {
+                System.out.println("Exiting server");
+                break;
+            }
 
         }
         server.scanner.close(); // Fix #6: Close scanner when done
-        return;
     }
 
     private void handleArgs(String[] args) {
@@ -54,7 +60,7 @@ class HTTPServer {
             try{
                 webroot = getWebroot(args[i]);
                 port = Integer.parseInt(args[i+1]);
-                if (port < 1 || port > 65535) {
+                if (port < MIN_PORT || port > MAX_PORT) {
                     usage("portrange");
                 }
                 createServlet(webroot, port, true);
@@ -80,86 +86,85 @@ class HTTPServer {
                 System.out.println("ERROR: port range must be between 1 and 65535.");
                 break;
         }
-        return;
     }
 
-    private void createServlet(File webroot, int port, Boolean start) throws IOException {
+    private void createServlet(File webroot, int port, boolean start) throws IOException {
         port = getAvailablePort(port);
-        Servlet servlet = new Servlet(webroot, port, servlet_count);
+        Servlet servlet = new Servlet(webroot, port, servletCount);
         servlets.add(servlet);
         if(start){
             servlet.start();
         }
-        servlet_count += 1;
-        return;
+        servletCount += 1;
     }
 
-    private void stopServlet(int servlet_number){
+    private void stopServlet(int servletNumber){
         try{
-            servlets.get(servlet_number).interrupt();
+            servlets.get(servletNumber).interrupt();
         }catch(IndexOutOfBoundsException exception){
             System.out.println("ERROR: Index is out of bounds. There are " + servlets.size() + " servlets.");
         }
     }
     private void stopServlet(){
-        servlets.get(servlet_count - 1).interrupt();
+        servlets.get(servletCount - 1).interrupt();
     }
-    private void restartServlet(int servlet_number){
+    private void restartServlet(int servletNumber){
         try{
-            Servlet servlet = servlets.get(servlet_number);
+            Servlet servlet = servlets.get(servletNumber);
             if(!servlet.isRunning()){
                 //Check if port is still available otherwise get a new port.
-                int new_port = getAvailablePort(servlet.port);
-                servlet = new Servlet(servlet.webroot, new_port, servlet_number);
+                int newPort = getAvailablePort(servlet.port);
+                servlet = new Servlet(servlet.webroot, newPort, servletNumber);
                 servlet.start();
-                servlets.set(servlet_number, servlet);
+                servlets.set(servletNumber, servlet);
             } else{
-                System.out.println("Servlet " +servlet_number + " is already running.");
+                System.out.println("Servlet " +servletNumber + " is already running.");
             }
         } catch(IndexOutOfBoundsException exception){
             System.err.println(exception);
-            return;
+        } catch(IOException exception){
+            System.err.println("Error restarting servlet: " + exception.getMessage());
         }
 
     }
 
     private void handleInput(String input) throws IOException {
         if(input.equals("")){return;}
-        int servlet_number= 0;
+        int servletNumber= 0;
         int port = 0;
         File webroot = null;
         boolean start = true;
         String[] params = input.split(" ");
-        int param_length = params.length;
+        int paramLength = params.length;
         //Parse the input.
         // Fix #6: Use shared scanner instance instead of creating new ones
         if(input.equals("exit")){
-            System.exit(0);
+            throw new IOException("Server shutting down");
         } else if(input.equals("help")){
             listCommands();
         } else if(params[0].equals("stop") ){
-            if(param_length == 1) {
+            if(paramLength == 1) {
                 stopServlet();
-            }else if(param_length == 2){
-                servlet_number = Integer.parseInt(params[1]);
-                stopServlet(servlet_number);
+            }else if(paramLength == 2){
+                servletNumber = Integer.parseInt(params[1]);
+                stopServlet(servletNumber);
             }
-        }else if(params[0].equals("restart") && param_length == 2) {
-            servlet_number = Integer.parseInt(params[1]);
-            restartServlet(servlet_number);
+        }else if(params[0].equals("restart") && paramLength == 2) {
+            servletNumber = Integer.parseInt(params[1]);
+            restartServlet(servletNumber);
         }else if(params[0].equals("create")){
-            if(param_length == 1){
+            if(paramLength == 1){
                 System.out.println("Please enter the web root directory for the new servlet: ");
                 webroot = getWebroot(scanner.nextLine());
                 System.out.println("Please enter the port number for the new servlet: ");
                 port = Integer.parseInt(scanner.nextLine());
-            } else if(param_length == 2){
+            } else if(paramLength == 2){
                 webroot = getWebroot(params[1]);
                 port = getAvailablePort(80);
-            } else if(param_length == 3){
+            } else if(paramLength == 3){
                 webroot = getWebroot(params[1]);
                 port = Integer.parseInt(params[2]);
-            } else if(param_length == 4){
+            } else if(paramLength == 4){
                 webroot = getWebroot(params[1]);
                 port = Integer.parseInt(params[2]);
                 start = Boolean.parseBoolean(params[3]);
@@ -172,29 +177,26 @@ class HTTPServer {
         else{
             System.out.println("Invalid command. Type help for list of commands and usage.");
         }
-        return;
     }
 
     private void listServlets() {
         for(Servlet servlet: servlets){
             servlet.getStatus();
         }
-        return;
     }
 
     //Check if port is available otherwise get the next available starting from 80.
-    private int getAvailablePort(int port) {
-        int original_port = port;
-        if (port < 1 || port > 65535) {
-            if(!interactive_mode){
-                System.out.println("ERROR: Port number is out of range.");
-                System.exit(0);
+    private int getAvailablePort(int port) throws IOException {
+        int originalPort = port;
+        if (port < MIN_PORT || port > MAX_PORT) {
+            if(!interactiveMode){
+                throw new IllegalArgumentException("Port number is out of range");
             }
             usage("portrange");
             port = 80;
         }
         ServerSocket socket;
-        for (int p = port; p <= 65535; p++) {
+        for (int p = port; p <= MAX_PORT; p++) {
             try {
                 socket = new ServerSocket(p);
                 socket.close();
@@ -203,22 +205,21 @@ class HTTPServer {
                 continue;
             }
         }
-        if( port > 0 && port < 65536 && (original_port != port)){
-            System.out.println("Port " + original_port + " was not available.");
+        if( port > 0 && port < 65536 && (originalPort != port)){
+            System.out.println("Port " + originalPort + " was not available.");
             System.out.println("This servlet will be assigned port " + port);
         }
         return 0;
     }
-    private File getWebroot(String path){
+    private File getWebroot(String path) throws IOException {
         File webroot;
         webroot = new File(path);
         boolean isDirectory = webroot.isDirectory();
-        if(!isDirectory && !interactive_mode){
-            System.err.println("Error: invalid directory.");
-            System.exit(0);
+        if(!isDirectory && !interactiveMode){
+            throw new IOException("Error: invalid directory - " + path);
         }
         // Fix #6: Use shared scanner instance instead of creating new one
-        while(!isDirectory && interactive_mode){
+        while(!isDirectory && interactiveMode){
             System.out.println("The path provided does not point to a valid directory. Enter a valid path: ");
             path = scanner.nextLine();
             webroot = new File(path);

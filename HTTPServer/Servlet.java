@@ -14,27 +14,27 @@ public class Servlet extends Thread{
     private static final int THREAD_POOL_SIZE = 20;
     private static final int REQUEST_QUEUE_LIMIT = 100;
     private static final long REQUEST_TIMEOUT_MINUTES = 5;
-    private ExecutorService thread_pool = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
+    private ExecutorService threadPool = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
     File webroot;
     int port = 0;
-    private Boolean run = true;
-    private int servlet_number;
+    private boolean run = true;
+    private int servletNumber;
     private FileHandler fileHandler;
     private ServerSocket mainSocket = null;
     private Logger auditLog = Logger.getLogger("requests");
     private Logger errorLog = Logger.getLogger("errors");
 
 
-    public Servlet(File webroot, int port, int servlet_number) {
+    public Servlet(File webroot, int port, int servletNumber) {
         this.webroot = webroot;
-        this.servlet_number = servlet_number;
+        this.servletNumber = servletNumber;
         this.port = port;
     }
 
     public void interrupt(){
-        System.out.println("Terminating servlet: " + servlet_number);
+        System.out.println("Terminating servlet: " + servletNumber);
         run = false;
-        thread_pool.shutdownNow();
+        threadPool.shutdownNow();
     }
 
     @Override
@@ -50,8 +50,8 @@ public class Servlet extends Thread{
                 try {
                     Socket socket = mainSocket.accept();
                     try {
-                        Runnable new_request = new ProcessRequest(webroot, socket, auditLog);
-                        thread_pool.submit(new_request);
+                        Runnable newRequest = new ProcessRequest(webroot, socket, auditLog);
+                        threadPool.submit(newRequest);
                     } catch (RejectedExecutionException e) {
                         // Thread pool is shutdown, close socket and exit loop
                         socket.close();
@@ -65,7 +65,6 @@ public class Servlet extends Thread{
         } catch (IOException exception){
             errorLog.log(Level.SEVERE, "Couldn't start servers ", exception);
         }
-        return;
     }
 
     private void setAuditLogHandler() {
@@ -84,7 +83,7 @@ public class Servlet extends Thread{
         return run;
     }
     void getStatus(){
-        System.out.println("Servlet " + servlet_number + " status is: " + (run ? "running" : "not running"));
+        System.out.println("Servlet " + servletNumber + " status is: " + (run ? "running" : "not running"));
         System.out.println("  Root directory: " + webroot.toString());
         if(run){
             System.out.println("  Listening on port: " + port);

@@ -15,12 +15,18 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.logging.Logger;
+import java.util.logging.Level;
 
 class ProcessRequest implements Runnable {
 
     private static final int MAX_REQUEST_SIZE = 8192; // 8KB max request size
     private static final int REQUEST_TIMEOUT_MS = 5000; // 5 second timeout
     private static final long MAX_FILE_SIZE = 1073741824L; // 1GB max file size
+    private static final int HTTP_OK = 200;
+    private static final int HTTP_NOT_FOUND = 404;
+    private static final int HTTP_UNAUTHORIZED = 401;
+    private static final int HTTP_METHOD_NOT_ALLOWED = 405;
+    private static final int HTTP_PAYLOAD_TOO_LARGE = 413;
     private static final Map<String, String> VALID_CREDENTIALS = new HashMap<>();
     static {
         // Initialize default credentials - user: admin, password: password
@@ -29,6 +35,7 @@ class ProcessRequest implements Runnable {
     private final File webroot;
     private final Socket socket;
     private Logger auditLog;
+    private Logger errorLog = Logger.getLogger("errors");
 
 
     public ProcessRequest(File webroot, Socket socket, Logger auditLog) {
@@ -68,14 +75,14 @@ class ProcessRequest implements Runnable {
 
             routeRequest(parts, headers);
         } catch (UnsupportedEncodingException e) {
-            e.printStackTrace();
+            errorLog.log(Level.WARNING, "Unsupported encoding in request", e);
         } catch (IOException e) {
-            e.printStackTrace();
+            errorLog.log(Level.WARNING, "IO error processing request", e);
         } finally {
             try {
                 socket.close();
             } catch (IOException e) {
-                e.printStackTrace();
+                errorLog.log(Level.WARNING, "Error closing socket", e);
             }
         }
     }
@@ -171,17 +178,16 @@ class ProcessRequest implements Runnable {
                 }
             }
         } catch (UnsupportedEncodingException e) {
-            e.printStackTrace();
+            errorLog.log(Level.WARNING, "Unsupported encoding in route", e);
         } catch (IOException e) {
-            e.printStackTrace();
+            errorLog.log(Level.WARNING, "IO error in route", e);
         } finally {
             try {
                 socket.close();
             } catch (IOException e) {
-                e.printStackTrace();
+                errorLog.log(Level.WARNING, "Error closing socket in route", e);
             }
         }
-        return;
     }
 
     private void HTTPGet(OutputStream outputStream, Writer writer, File file, String mimeType, String version)
