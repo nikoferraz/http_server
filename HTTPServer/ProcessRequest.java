@@ -36,12 +36,23 @@ class ProcessRequest implements Runnable {
     private final Socket socket;
     private Logger auditLog;
     private Logger errorLog = Logger.getLogger("errors");
+    private ServerConfig config;
+    private CompressionHandler compressionHandler;
+    private CacheManager cacheManager;
+    private boolean useHTTP11 = true; // Default to HTTP/1.1
 
 
     public ProcessRequest(File webroot, Socket socket, Logger auditLog) {
+        this(webroot, socket, auditLog, new ServerConfig());
+    }
+
+    public ProcessRequest(File webroot, Socket socket, Logger auditLog, ServerConfig config) {
         this.webroot = webroot;
         this.socket = socket;
         this.auditLog = auditLog;
+        this.config = config;
+        this.compressionHandler = new CompressionHandler();
+        this.cacheManager = new CacheManager();
     }
 
     @Override
@@ -94,14 +105,25 @@ class ProcessRequest implements Runnable {
         }
 
         String fileName = requestHeader[1];
-        //if(fileName == ""){ emptyRequest()}; Handle default file, such as index.html or 404.
+        String version = (requestHeader.length > 2) ? requestHeader[2] : "HTTP/1.0";
+
+        // Determine HTTP version
+        useHTTP11 = version.startsWith("HTTP/1.1");
+
+        // Validate Host header for HTTP/1.1 (required by spec)
+        if (useHTTP11 && !headers.containsKey("host")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                sendBadRequest(writer, "HTTP/1.1 requires Host header");
+            }
+            return;
+        }
 
         // Handle root path requests - serve index.html or return 404
         if (fileName == null || fileName.isEmpty() || fileName.equals("/")) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
-                String version = (requestHeader.length > 2) ? requestHeader[2] : "";
-                resourceNotFound(writer, version);
+                resourceNotFound(writer, version, headers);
             }
             return;
         }
@@ -113,8 +135,7 @@ class ProcessRequest implements Runnable {
         if (requestedPath == null) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
-                String version = (requestHeader.length > 2) ? requestHeader[2] : "";
-                resourceNotFound(writer, version);
+                resourceNotFound(writer, version, headers);
             }
             return;
         }
@@ -123,7 +144,7 @@ class ProcessRequest implements Runnable {
         if (!validateBasicAuth(headers)) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
-                sendUnauthorizedResponse(writer);
+                sendUnauthorizedResponse(writer, version, headers);
             }
             return;
         }
@@ -133,22 +154,17 @@ class ProcessRequest implements Runnable {
         if (mimeType == null) {
             mimeType = "application/octet-stream";
         }
-        String version = "";
+
         File file = requestedPath.toFile();
         System.out.println("Requesting resource: " + fileName+ "\r\n");
         System.out.println("The file mimetype is  " + mimeType+ "\r\n");
-        if (requestHeader.length > 2) {
-            version = requestHeader[2];
-        }
+
         try {
             // Check file size before processing
             if (file.length() > MAX_FILE_SIZE) {
                 try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                      Writer writer = new OutputStreamWriter(outputStream)) {
-                    writer.write("HTTP/1.0 413 Payload Too Large\r\n");
-                    writer.write("Content-type: text/plain\r\n\r\n");
-                    writer.write("File size exceeds maximum allowed size\r\n");
-                    writer.flush();
+                    sendPayloadTooLarge(writer, version, headers);
                 }
                 return;
             }
@@ -157,7 +173,7 @@ class ProcessRequest implements Runnable {
             if (!file.canRead()) {
                 try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                      Writer writer = new OutputStreamWriter(outputStream)) {
-                    resourceNotFound(writer, version);
+                    resourceNotFound(writer, version, headers);
                 }
                 return;
             }
@@ -167,13 +183,13 @@ class ProcessRequest implements Runnable {
                 String verb = requestHeader[0];
                 switch (verb) {
                     case "GET":
-                        HTTPGet(outputStream, writer, file, mimeType, version);
+                        HTTPGet(outputStream, writer, file, mimeType, version, headers);
                         break;
                     case "HEAD":
-                        HTTPHead(writer, file, mimeType, version);
+                        HTTPHead(writer, file, mimeType, version, headers);
                         break;
                     default:
-                        invalidVerb(writer, version);
+                        invalidVerb(writer, version, headers);
                         break;
                 }
             }
@@ -190,74 +206,249 @@ class ProcessRequest implements Runnable {
         }
     }
 
-    private void HTTPGet(OutputStream outputStream, Writer writer, File file, String mimeType, String version)
+    private void HTTPGet(OutputStream outputStream, Writer writer, File file, String mimeType, String version, Map<String, String> headers)
             throws IOException {
         long fileLength = file.length();
-        String code = "404";
-        if (version.startsWith("HTTP/")) {
-            sendHeader(writer, "HTTP/1.0 200 OK", mimeType, (int) fileLength);
-            code = "200";
-        }
+        String code = "200";
 
-        // Stream file in chunks to prevent memory exhaustion
-        try (FileInputStream fis = new FileInputStream(file)) {
-            byte[] buffer = new byte[8192];
-            int bytesRead;
-            while ((bytesRead = fis.read(buffer)) != -1) {
-                outputStream.write(buffer, 0, bytesRead);
+        // Generate ETag and Last-Modified headers
+        String etag = null;
+        String lastModified = null;
+        if (config.isCacheEnabled()) {
+            etag = cacheManager.generateETag(file);
+            lastModified = cacheManager.getLastModified(file);
+
+            // Check if resource was modified (conditional request)
+            if (!cacheManager.shouldServeResource(headers, file, etag)) {
+                // Send 304 Not Modified
+                sendNotModified(writer, version, etag, lastModified, headers);
+                logRequest("GET", file.getName(), version, "304", 0);
+                return;
             }
         }
 
-        logRequest("GET", file.getName(), "HTTP/1.0", code, (int) fileLength);
+        // Check if compression should be applied
+        boolean useCompression = config.isCompressionEnabled() &&
+                                 compressionHandler.shouldCompress(headers, mimeType, fileLength, file.getName());
+
+        byte[] content = null;
+        int contentLength = (int) fileLength;
+
+        if (useCompression) {
+            // Compress the file
+            content = compressionHandler.compressFile(file);
+            if (content != null) {
+                contentLength = content.length;
+            } else {
+                // Compression failed, serve uncompressed
+                useCompression = false;
+            }
+        }
+
+        // Send response headers
+        if (version.startsWith("HTTP/")) {
+            String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+            sendHeader(writer, httpVersion + " 200 OK", mimeType, contentLength, etag, lastModified, useCompression, headers);
+        }
+
+        // Send response body
+        if (useCompression && content != null) {
+            // Write compressed content
+            outputStream.write(content);
+        } else {
+            // Stream file in chunks to prevent memory exhaustion
+            try (FileInputStream fis = new FileInputStream(file)) {
+                byte[] buffer = new byte[8192];
+                int bytesRead;
+                while ((bytesRead = fis.read(buffer)) != -1) {
+                    outputStream.write(buffer, 0, bytesRead);
+                }
+            }
+        }
+
+        logRequest("GET", file.getName(), version, code, contentLength);
         outputStream.flush();
     }
 
-    private void HTTPHead(Writer writer, File file, String mimeType, String version) throws IOException {
+    private void HTTPHead(Writer writer, File file, String mimeType, String version, Map<String, String> headers) throws IOException {
         long fileLength = file.length();
-        String code = "404";
-        if (version.startsWith("HTTP/")) {
-            sendHeader(writer, "HTTP/1.0 200 OK", mimeType, (int) fileLength);
-            code = "200";
+        String code = "200";
+
+        // Generate ETag and Last-Modified headers (same as GET)
+        String etag = null;
+        String lastModified = null;
+        if (config.isCacheEnabled()) {
+            etag = cacheManager.generateETag(file);
+            lastModified = cacheManager.getLastModified(file);
+
+            // Check if resource was modified (conditional request)
+            if (!cacheManager.shouldServeResource(headers, file, etag)) {
+                // Send 304 Not Modified
+                sendNotModified(writer, version, etag, lastModified, headers);
+                logRequest("HEAD", file.getName(), version, "304", 0);
+                return;
+            }
         }
-        logRequest("HEAD", file.getName(), "HTTP/1.0", code, (int) fileLength);
+
+        // Calculate content length (compressed or not)
+        boolean wouldCompress = config.isCompressionEnabled() &&
+                                compressionHandler.shouldCompress(headers, mimeType, fileLength, file.getName());
+        int contentLength = (int) fileLength;
+
+        if (wouldCompress) {
+            // For HEAD, we need to calculate what the compressed size would be
+            byte[] compressed = compressionHandler.compressFile(file);
+            if (compressed != null) {
+                contentLength = compressed.length;
+            } else {
+                wouldCompress = false;
+            }
+        }
+
+        if (version.startsWith("HTTP/")) {
+            String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+            sendHeader(writer, httpVersion + " 200 OK", mimeType, contentLength, etag, lastModified, wouldCompress, headers);
+        }
+
+        logRequest("HEAD", file.getName(), version, code, contentLength);
     }
 
-    public void invalidVerb(Writer writer, String version) throws IOException {
+    public void invalidVerb(Writer writer, String version, Map<String, String> headers) throws IOException {
         String response = "<HTML>\r\n<head><title>Method Not Allowed</title></head>\r\n"
                 + "<body><h1>405 Method Not Allowed</h1>\r\n"
                 + "<p>The HTTP method used is not supported by this server.</p>\r\n"
                 + "</body></html>\r\n";
 
         if (version.startsWith("HTTP/")) {
-            writer.write("HTTP/1.0 405 Method Not Allowed\r\n");
+            String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+            writer.write(httpVersion + " 405 Method Not Allowed\r\n");
             writer.write("Allow: GET, HEAD\r\n");
             writer.write("Content-type: text/html; charset=utf-8\r\n");
-            writer.write("Content-length: " + response.length() + "\r\n\r\n");
+            writer.write("Content-length: " + response.length() + "\r\n");
+            addCommonHeaders(writer, headers);
+            writer.write("\r\n");
         }
         writer.write(response);
         writer.flush();
     }
 
-    public void resourceNotFound(Writer writer, String version) throws IOException {
+    public void resourceNotFound(Writer writer, String version, Map<String, String> headers) throws IOException {
         String response = new StringBuilder("<HTML>\r\n").append("<head><title>Resource Not Found</title></head>\r\n")
                 .append("<body>").append("<h1>404 Error: File not found.</h1>\r\n").append("</body></html>\r\n")
                 .toString();
         if (version.startsWith("HTTP/")) {
-            sendHeader(writer, "HTTP/1.0 404 File not found!", "text/html; charset=utf-8", response.length());
+            String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+            writer.write(httpVersion + " 404 Not Found\r\n");
+            writer.write("Content-type: text/html; charset=utf-8\r\n");
+            writer.write("Content-length: " + response.length() + "\r\n");
+            addCommonHeaders(writer, headers);
+            writer.write("\r\n");
         }
         writer.write(response);
         writer.flush();
-        return;
     }
 
     private void sendHeader(Writer writer, String responseCode, String mimeType, int length) throws IOException {
+        sendHeader(writer, responseCode, mimeType, length, null, null, false, null);
+    }
+
+    private void sendHeader(Writer writer, String responseCode, String mimeType, int length,
+                           String etag, String lastModified, boolean compressed, Map<String, String> headers) throws IOException {
         writer.write(responseCode + "\r\n");
-        writer.write("Date: " + (new Date()) + "\r\n");
-        writer.write("Server: Nick's CSC 583 Final Project HTTPServer\r\n");
+        writer.write("Date: " + cacheManager.getHttpDate() + "\r\n");
+        writer.write("Server: HTTPServer/2.0\r\n");
         writer.write("Content-length: " + length + "\r\n");
-        writer.write("Content-type: " + mimeType + "\r\n\r\n");
+        writer.write("Content-type: " + mimeType + "\r\n");
+
+        // Add caching headers
+        if (config.isCacheEnabled() && etag != null) {
+            writer.write("ETag: " + etag + "\r\n");
+        }
+        if (config.isCacheEnabled() && lastModified != null) {
+            writer.write("Last-Modified: " + lastModified + "\r\n");
+        }
+        if (config.isCacheEnabled()) {
+            writer.write("Cache-Control: " + cacheManager.getCacheControl("") + "\r\n");
+        }
+
+        // Add compression header
+        if (compressed) {
+            writer.write("Content-Encoding: gzip\r\n");
+            writer.write("Vary: Accept-Encoding\r\n");
+        }
+
+        // Add common headers (Connection, HSTS, etc.)
+        addCommonHeaders(writer, headers);
+
+        writer.write("\r\n");
         writer.flush();
-        return;
+    }
+
+    private void addCommonHeaders(Writer writer, Map<String, String> headers) throws IOException {
+        // HTTP/1.1 Connection header
+        if (useHTTP11) {
+            // For HTTP/1.1, default is keep-alive, but we're closing after each request for now
+            writer.write("Connection: close\r\n");
+        }
+
+        // Add HSTS header if TLS is enabled
+        if (config.isTlsEnabled() && config.isHstsEnabled()) {
+            String hstsHeader = config.getHstsHeader();
+            if (hstsHeader != null) {
+                writer.write("Strict-Transport-Security: " + hstsHeader + "\r\n");
+            }
+        }
+    }
+
+    private void sendNotModified(Writer writer, String version, String etag, String lastModified, Map<String, String> headers) throws IOException {
+        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+        writer.write(httpVersion + " 304 Not Modified\r\n");
+        writer.write("Date: " + cacheManager.getHttpDate() + "\r\n");
+
+        if (etag != null) {
+            writer.write("ETag: " + etag + "\r\n");
+        }
+        if (lastModified != null) {
+            writer.write("Last-Modified: " + lastModified + "\r\n");
+        }
+
+        writer.write("Cache-Control: " + cacheManager.getCacheControl("") + "\r\n");
+
+        addCommonHeaders(writer, headers);
+        writer.write("\r\n");
+        writer.flush();
+    }
+
+    private void sendBadRequest(Writer writer, String message) throws IOException {
+        String response = "<HTML>\r\n<head><title>Bad Request</title></head>\r\n"
+                + "<body><h1>400 Bad Request</h1>\r\n"
+                + "<p>" + message + "</p>\r\n"
+                + "</body></html>\r\n";
+
+        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+        writer.write(httpVersion + " 400 Bad Request\r\n");
+        writer.write("Content-type: text/html; charset=utf-8\r\n");
+        writer.write("Content-length: " + response.length() + "\r\n");
+        writer.write("Connection: close\r\n");
+        writer.write("\r\n");
+        writer.write(response);
+        writer.flush();
+    }
+
+    private void sendPayloadTooLarge(Writer writer, String version, Map<String, String> headers) throws IOException {
+        String response = "<HTML>\r\n<head><title>Payload Too Large</title></head>\r\n"
+                + "<body><h1>413 Payload Too Large</h1>\r\n"
+                + "<p>File size exceeds maximum allowed size</p>\r\n"
+                + "</body></html>\r\n";
+
+        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+        writer.write(httpVersion + " 413 Payload Too Large\r\n");
+        writer.write("Content-type: text/html; charset=utf-8\r\n");
+        writer.write("Content-length: " + response.length() + "\r\n");
+        addCommonHeaders(writer, headers);
+        writer.write("\r\n");
+        writer.write(response);
+        writer.flush();
     }
     public void logRequest(String verb, String fileName, String version, String code, int bytes){
         //127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326
@@ -342,16 +533,19 @@ class ProcessRequest implements Runnable {
         }
     }
 
-    private void sendUnauthorizedResponse(Writer writer) throws IOException {
+    private void sendUnauthorizedResponse(Writer writer, String version, Map<String, String> headers) throws IOException {
         String response = "<HTML>\r\n<head><title>Unauthorized</title></head>\r\n"
                 + "<body><h1>401 Unauthorized</h1>\r\n"
                 + "<p>Please provide valid credentials using Basic Authentication.</p>\r\n"
                 + "</body></html>\r\n";
 
-        writer.write("HTTP/1.0 401 Unauthorized\r\n");
+        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+        writer.write(httpVersion + " 401 Unauthorized\r\n");
         writer.write("WWW-Authenticate: Basic realm=\"HTTP Server\"\r\n");
         writer.write("Content-type: text/html; charset=utf-8\r\n");
-        writer.write("Content-length: " + response.length() + "\r\n\r\n");
+        writer.write("Content-length: " + response.length() + "\r\n");
+        addCommonHeaders(writer, headers);
+        writer.write("\r\n");
         writer.write(response);
         writer.flush();
     }
