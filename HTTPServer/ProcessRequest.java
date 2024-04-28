@@ -41,6 +41,14 @@ class ProcessRequest implements Runnable {
     private CacheManager cacheManager;
     private boolean useHTTP11 = true; // Default to HTTP/1.1
 
+    // Phase 5: Advanced features
+    private MetricsCollector metrics;
+    private HealthCheckHandler healthCheckHandler;
+    private RequestBodyParser bodyParser;
+    private RateLimiter rateLimiter;
+    private StructuredLogger structuredLogger;
+    private String requestId;
+
 
     public ProcessRequest(File webroot, Socket socket, Logger auditLog) {
         this(webroot, socket, auditLog, new ServerConfig());
@@ -53,11 +61,33 @@ class ProcessRequest implements Runnable {
         this.config = config;
         this.compressionHandler = new CompressionHandler();
         this.cacheManager = new CacheManager();
+
+        // Phase 5: Initialize advanced features
+        this.metrics = MetricsCollector.getInstance();
+        this.healthCheckHandler = new HealthCheckHandler(webroot);
+        this.bodyParser = new RequestBodyParser(config.getRequestBodyMaxSizeBytes());
+        this.structuredLogger = new StructuredLogger(auditLog, config.isJsonLogging(), config.getLoggingLevel());
+        this.requestId = structuredLogger.generateRequestId();
+    }
+
+    public void setRateLimiter(RateLimiter rateLimiter) {
+        this.rateLimiter = rateLimiter;
     }
 
     @Override
     public void run() {
+        long startTime = System.currentTimeMillis();
+        String method = null;
+        String path = null;
+        int statusCode = 500;
+        long responseSize = 0;
+
         try {
+            // Phase 5: Increment active connections gauge
+            if (config.isMetricsEnabled()) {
+                metrics.incrementGauge("http_active_connections");
+            }
+
             socket.setSoTimeout(REQUEST_TIMEOUT_MS);
             BufferedReader inputStream = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
 
@@ -72,7 +102,10 @@ class ProcessRequest implements Runnable {
                 throw new IOException("Invalid HTTP request format");
             }
 
-            // Read HTTP headers to extract Authorization
+            method = parts[0];
+            path = parts[1];
+
+            // Read HTTP headers
             Map<String, String> headers = new HashMap<>();
             String headerLine;
             while ((headerLine = inputStream.readLine()) != null && !headerLine.isEmpty()) {
@@ -84,27 +117,68 @@ class ProcessRequest implements Runnable {
                 }
             }
 
-            routeRequest(parts, headers);
+            // Phase 5: Rate limiting check
+            if (config.isRateLimitEnabled() && rateLimiter != null) {
+                String clientIp = socket.getRemoteSocketAddress().toString();
+                RateLimiter.RateLimitResult rateLimitResult = rateLimiter.tryAcquire(clientIp);
+
+                if (!rateLimitResult.isAllowed()) {
+                    statusCode = 429;
+                    try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                         Writer writer = new OutputStreamWriter(outputStream)) {
+                        sendRateLimitExceeded(writer, parts.length > 2 ? parts[2] : "HTTP/1.0",
+                                            rateLimitResult, headers);
+                    }
+                    return;
+                }
+
+                // Add rate limit headers (will be included in response)
+                headers.put("x-ratelimit-limit", String.valueOf(rateLimitResult.getLimit()));
+                headers.put("x-ratelimit-remaining", String.valueOf(rateLimitResult.getRemaining()));
+                headers.put("x-ratelimit-reset", String.valueOf(rateLimitResult.getResetTime()));
+            }
+
+            routeRequest(parts, headers, inputStream);
+            statusCode = 200; // Assume success if no exception
         } catch (UnsupportedEncodingException e) {
+            statusCode = 400;
             errorLog.log(Level.WARNING, "Unsupported encoding in request", e);
+            structuredLogger.logError(requestId, "Unsupported encoding", e);
         } catch (IOException e) {
+            statusCode = 500;
             errorLog.log(Level.WARNING, "IO error processing request", e);
+            structuredLogger.logError(requestId, "IO error processing request", e);
         } finally {
             try {
                 socket.close();
             } catch (IOException e) {
                 errorLog.log(Level.WARNING, "Error closing socket", e);
             }
+
+            // Phase 5: Decrement active connections gauge
+            if (config.isMetricsEnabled()) {
+                metrics.decrementGauge("http_active_connections");
+
+                // Record request metrics
+                long duration = System.currentTimeMillis() - startTime;
+                metrics.recordRequest(method != null ? method : "UNKNOWN", statusCode, duration, responseSize);
+
+                // Log structured request
+                String remoteIp = socket.getRemoteSocketAddress().toString();
+                structuredLogger.logRequest(requestId, remoteIp, method != null ? method : "UNKNOWN",
+                                          path != null ? path : "/", statusCode, duration, responseSize);
+            }
         }
     }
 
-    public void routeRequest(String[] requestHeader, Map<String, String> headers) throws IOException {
+    public void routeRequest(String[] requestHeader, Map<String, String> headers, BufferedReader inputStream) throws IOException {
         // Array bounds checking
         if (requestHeader.length < 2) {
             throw new IOException("Invalid HTTP request: missing method or path");
         }
 
-        String fileName = requestHeader[1];
+        String method = requestHeader[0];
+        String path = requestHeader[1];
         String version = (requestHeader.length > 2) ? requestHeader[2] : "HTTP/1.0";
 
         // Determine HTTP version
@@ -119,14 +193,43 @@ class ProcessRequest implements Runnable {
             return;
         }
 
+        // Phase 5: Route health check endpoints
+        if (config.isHealthChecksEnabled() && path.startsWith("/health/")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                healthCheckHandler.handleHealthCheck(writer, path, version);
+            }
+            return;
+        }
+
+        // Phase 5: Route metrics endpoint
+        if (config.isMetricsEnabled() && path.equals("/metrics")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                handleMetricsEndpoint(writer, version);
+            }
+            return;
+        }
+
+        // Phase 5: Route API endpoints (POST/PUT/DELETE)
+        if (path.startsWith("/api/")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                handleApiEndpoint(method, path, version, headers, inputStream, writer);
+            }
+            return;
+        }
+
         // Handle root path requests - serve index.html or return 404
-        if (fileName == null || fileName.isEmpty() || fileName.equals("/")) {
+        if (path == null || path.isEmpty() || path.equals("/")) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
                 resourceNotFound(writer, version, headers);
             }
             return;
         }
+
+        String fileName = path;
 
         fileName = fileName.substring(1);
 
@@ -180,8 +283,7 @@ class ProcessRequest implements Runnable {
 
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
-                String verb = requestHeader[0];
-                switch (verb) {
+                switch (method) {
                     case "GET":
                         HTTPGet(outputStream, writer, file, mimeType, version, headers);
                         break;
@@ -545,6 +647,205 @@ class ProcessRequest implements Runnable {
         writer.write("Content-type: text/html; charset=utf-8\r\n");
         writer.write("Content-length: " + response.length() + "\r\n");
         addCommonHeaders(writer, headers);
+        writer.write("\r\n");
+        writer.write(response);
+        writer.flush();
+    }
+
+    // Phase 5: Metrics endpoint handler
+    private void handleMetricsEndpoint(Writer writer, String version) throws IOException {
+        String metricsOutput = metrics.exportPrometheusMetrics();
+
+        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+        writer.write(httpVersion + " 200 OK\r\n");
+        writer.write("Content-Type: text/plain; version=0.0.4\r\n");
+        writer.write("Content-Length: " + metricsOutput.length() + "\r\n");
+        writer.write("Connection: close\r\n");
+        writer.write("\r\n");
+        writer.write(metricsOutput);
+        writer.flush();
+    }
+
+    // Phase 5: Rate limit exceeded response
+    private void sendRateLimitExceeded(Writer writer, String version, RateLimiter.RateLimitResult result,
+                                      Map<String, String> headers) throws IOException {
+        String response = String.format(
+            "{\"error\":\"Too many requests\",\"retryAfter\":%d}",
+            result.getRetryAfter()
+        );
+
+        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+        writer.write(httpVersion + " 429 Too Many Requests\r\n");
+        writer.write("Content-Type: application/json\r\n");
+        writer.write("Content-Length: " + response.length() + "\r\n");
+        writer.write("X-RateLimit-Limit: " + result.getLimit() + "\r\n");
+        writer.write("X-RateLimit-Remaining: " + result.getRemaining() + "\r\n");
+        writer.write("X-RateLimit-Reset: " + result.getResetTime() + "\r\n");
+        writer.write("Retry-After: " + result.getRetryAfter() + "\r\n");
+        writer.write("Connection: close\r\n");
+        writer.write("\r\n");
+        writer.write(response);
+        writer.flush();
+    }
+
+    // Phase 5: API endpoint handler (POST/PUT/DELETE)
+    private void handleApiEndpoint(String method, String path, String version, Map<String, String> headers,
+                                   BufferedReader inputStream, Writer writer) throws IOException {
+        // Check authentication for API endpoints
+        if (!validateBasicAuth(headers)) {
+            sendUnauthorizedResponse(writer, version, headers);
+            return;
+        }
+
+        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+
+        switch (path) {
+            case "/api/echo":
+                handleEchoEndpoint(method, version, headers, inputStream, writer);
+                break;
+
+            case "/api/upload":
+                handleUploadEndpoint(method, version, headers, inputStream, writer);
+                break;
+
+            default:
+                if (path.startsWith("/api/data")) {
+                    handleDataEndpoint(method, path, version, headers, inputStream, writer);
+                } else {
+                    sendApiNotFound(writer, version);
+                }
+                break;
+        }
+    }
+
+    private void handleEchoEndpoint(String method, String version, Map<String, String> headers,
+                                   BufferedReader inputStream, Writer writer) throws IOException {
+        if (!method.equals("POST")) {
+            sendMethodNotAllowed(writer, version, "POST");
+            return;
+        }
+
+        try {
+            RequestBodyParser.ParsedBody body = bodyParser.parseBody(socket.getInputStream(), headers);
+            String responseBody = String.format(
+                "{\"echo\":%s,\"contentType\":\"%s\",\"size\":%d}",
+                body.getRawContent() != null ? "\"" + body.getRawContent() + "\"" : "null",
+                body.getContentType(),
+                body.getRawContent() != null ? body.getRawContent().length() : 0
+            );
+
+            String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+            writer.write(httpVersion + " 200 OK\r\n");
+            writer.write("Content-Type: application/json\r\n");
+            writer.write("Content-Length: " + responseBody.length() + "\r\n");
+            writer.write("Connection: close\r\n");
+            writer.write("\r\n");
+            writer.write(responseBody);
+            writer.flush();
+        } catch (RequestBodyParser.PayloadTooLargeException e) {
+            sendPayloadTooLarge(writer, version, headers);
+        }
+    }
+
+    private void handleUploadEndpoint(String method, String version, Map<String, String> headers,
+                                     BufferedReader inputStream, Writer writer) throws IOException {
+        if (!method.equals("POST")) {
+            sendMethodNotAllowed(writer, version, "POST");
+            return;
+        }
+
+        try {
+            RequestBodyParser.ParsedBody body = bodyParser.parseBody(socket.getInputStream(), headers);
+            String responseBody = String.format(
+                "{\"status\":\"uploaded\",\"contentType\":\"%s\",\"size\":%d,\"parameters\":%d}",
+                body.getContentType(),
+                body.getRawBytes() != null ? body.getRawBytes().length : 0,
+                body.getParameters().size()
+            );
+
+            String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+            writer.write(httpVersion + " 200 OK\r\n");
+            writer.write("Content-Type: application/json\r\n");
+            writer.write("Content-Length: " + responseBody.length() + "\r\n");
+            writer.write("Connection: close\r\n");
+            writer.write("\r\n");
+            writer.write(responseBody);
+            writer.flush();
+        } catch (RequestBodyParser.PayloadTooLargeException e) {
+            sendPayloadTooLarge(writer, version, headers);
+        }
+    }
+
+    private void handleDataEndpoint(String method, String path, String version, Map<String, String> headers,
+                                   BufferedReader inputStream, Writer writer) throws IOException {
+        String responseBody;
+        int statusCode = 200;
+        String statusText = "OK";
+
+        switch (method) {
+            case "PUT":
+                try {
+                    RequestBodyParser.ParsedBody body = bodyParser.parseBody(socket.getInputStream(), headers);
+                    responseBody = "{\"status\":\"updated\",\"path\":\"" + path + "\"}";
+                } catch (RequestBodyParser.PayloadTooLargeException e) {
+                    sendPayloadTooLarge(writer, version, headers);
+                    return;
+                }
+                break;
+
+            case "DELETE":
+                responseBody = "{\"status\":\"deleted\",\"path\":\"" + path + "\"}";
+                break;
+
+            case "POST":
+                try {
+                    RequestBodyParser.ParsedBody body = bodyParser.parseBody(socket.getInputStream(), headers);
+                    responseBody = "{\"status\":\"created\",\"path\":\"" + path + "\"}";
+                    statusCode = 201;
+                    statusText = "Created";
+                } catch (RequestBodyParser.PayloadTooLargeException e) {
+                    sendPayloadTooLarge(writer, version, headers);
+                    return;
+                }
+                break;
+
+            default:
+                sendMethodNotAllowed(writer, version, "PUT, DELETE, POST");
+                return;
+        }
+
+        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+        writer.write(httpVersion + " " + statusCode + " " + statusText + "\r\n");
+        writer.write("Content-Type: application/json\r\n");
+        writer.write("Content-Length: " + responseBody.length() + "\r\n");
+        writer.write("Connection: close\r\n");
+        writer.write("\r\n");
+        writer.write(responseBody);
+        writer.flush();
+    }
+
+    private void sendApiNotFound(Writer writer, String version) throws IOException {
+        String response = "{\"error\":\"API endpoint not found\"}";
+
+        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+        writer.write(httpVersion + " 404 Not Found\r\n");
+        writer.write("Content-Type: application/json\r\n");
+        writer.write("Content-Length: " + response.length() + "\r\n");
+        writer.write("Connection: close\r\n");
+        writer.write("\r\n");
+        writer.write(response);
+        writer.flush();
+    }
+
+    private void sendMethodNotAllowed(Writer writer, String version, String allowedMethods) throws IOException {
+        String response = "{\"error\":\"Method not allowed\"}";
+
+        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+        writer.write(httpVersion + " 405 Method Not Allowed\r\n");
+        writer.write("Allow: " + allowedMethods + "\r\n");
+        writer.write("Content-Type: application/json\r\n");
+        writer.write("Content-Length: " + response.length() + "\r\n");
+        writer.write("Connection: close\r\n");
         writer.write("\r\n");
         writer.write(response);
         writer.flush();

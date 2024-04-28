@@ -24,6 +24,7 @@ public class Servlet extends Thread{
     private ServerConfig config;
     private TLSManager tlsManager;
     private boolean useTLS;
+    private RateLimiter rateLimiter;
 
 
     public Servlet(File webroot, int port, int servletNumber) {
@@ -46,6 +47,23 @@ public class Servlet extends Thread{
             } catch (Exception e) {
                 errorLog.log(Level.SEVERE, "Failed to initialize TLS, falling back to HTTP", e);
                 useTLS = false;
+            }
+        }
+
+        // Phase 5: Initialize rate limiter
+        if (config.isRateLimitEnabled()) {
+            rateLimiter = new RateLimiter(
+                config.getRateLimitRequestsPerSecond(),
+                config.getRateLimitBurstSize()
+            );
+
+            // Add whitelisted IPs
+            String whitelistStr = config.getRateLimitWhitelistIps();
+            if (whitelistStr != null && !whitelistStr.isEmpty()) {
+                String[] ips = whitelistStr.split(",");
+                for (String ip : ips) {
+                    rateLimiter.addToWhitelist(ip.trim());
+                }
             }
         }
     }
@@ -88,7 +106,12 @@ public class Servlet extends Thread{
             Thread.currentThread().interrupt();
         }
 
-        // Step 5: Close server socket if still open
+        // Step 5: Shutdown rate limiter
+        if (rateLimiter != null) {
+            rateLimiter.shutdown();
+        }
+
+        // Step 6: Close server socket if still open
         if (mainSocket != null && !mainSocket.isClosed()) {
             try {
                 mainSocket.close();
@@ -125,7 +148,11 @@ public class Servlet extends Thread{
                 try {
                     Socket socket = mainSocket.accept();
                     try {
-                        Runnable newRequest = new ProcessRequest(webroot, socket, auditLog, config);
+                        ProcessRequest newRequest = new ProcessRequest(webroot, socket, auditLog, config);
+                        // Phase 5: Set rate limiter if enabled
+                        if (rateLimiter != null) {
+                            newRequest.setRateLimiter(rateLimiter);
+                        }
                         threadPool.submit(newRequest);
                     } catch (RejectedExecutionException e) {
                         // Thread pool is shutdown, close socket and exit loop

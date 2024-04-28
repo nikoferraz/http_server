@@ -26,6 +26,27 @@ public class ServerConfig {
     private static final boolean DEFAULT_HSTS_ENABLED = true;
     private static final int DEFAULT_HSTS_MAX_AGE = 31536000; // 1 year
 
+    // Phase 5: Observability defaults
+    private static final boolean DEFAULT_METRICS_ENABLED = true;
+    private static final String DEFAULT_LOGGING_FORMAT = "json";
+    private static final String DEFAULT_LOGGING_LEVEL = "INFO";
+    private static final boolean DEFAULT_TRACING_ENABLED = false;
+
+    // Phase 5: Health checks defaults
+    private static final boolean DEFAULT_HEALTH_CHECKS_ENABLED = true;
+    private static final int DEFAULT_HEALTH_DISK_MIN_MB = 100;
+
+    // Phase 5: Request body defaults
+    private static final int DEFAULT_REQUEST_BODY_MAX_SIZE_MB = 10;
+    private static final boolean DEFAULT_REQUEST_BODY_JSON_ENABLED = true;
+    private static final boolean DEFAULT_REQUEST_BODY_FORM_ENABLED = true;
+    private static final boolean DEFAULT_REQUEST_BODY_MULTIPART_ENABLED = true;
+
+    // Phase 5: Rate limiting defaults
+    private static final boolean DEFAULT_RATE_LIMIT_ENABLED = true;
+    private static final int DEFAULT_RATE_LIMIT_REQUESTS_PER_SECOND = 100;
+    private static final int DEFAULT_RATE_LIMIT_BURST_SIZE = 20;
+
     private Properties properties;
 
     // Configuration fields
@@ -43,6 +64,29 @@ public class ServerConfig {
     private boolean hstsEnabled;
     private int hstsMaxAge;
     private boolean hstsIncludeSubdomains;
+
+    // Phase 5: Observability fields
+    private boolean metricsEnabled;
+    private String loggingFormat;
+    private String loggingLevel;
+    private boolean tracingEnabled;
+    private String tracingOtlpEndpoint;
+
+    // Phase 5: Health checks fields
+    private boolean healthChecksEnabled;
+    private int healthDiskMinMb;
+
+    // Phase 5: Request body fields
+    private int requestBodyMaxSizeMb;
+    private boolean requestBodyJsonEnabled;
+    private boolean requestBodyFormEnabled;
+    private boolean requestBodyMultipartEnabled;
+
+    // Phase 5: Rate limiting fields
+    private boolean rateLimitEnabled;
+    private int rateLimitRequestsPerSecond;
+    private int rateLimitBurstSize;
+    private String rateLimitWhitelistIps;
 
     public ServerConfig() {
         this(DEFAULT_CONFIG_FILE);
@@ -88,6 +132,29 @@ public class ServerConfig {
         // Feature flags
         compressionEnabled = getBooleanConfig("compression.enabled", "COMPRESSION_ENABLED", DEFAULT_COMPRESSION_ENABLED);
         cacheEnabled = getBooleanConfig("cache.enabled", "CACHE_ENABLED", DEFAULT_CACHE_ENABLED);
+
+        // Phase 5: Observability configuration
+        metricsEnabled = getBooleanConfig("metrics.enabled", "METRICS_ENABLED", DEFAULT_METRICS_ENABLED);
+        loggingFormat = getStringConfig("logging.format", "LOGGING_FORMAT", DEFAULT_LOGGING_FORMAT);
+        loggingLevel = getStringConfig("logging.level", "LOGGING_LEVEL", DEFAULT_LOGGING_LEVEL);
+        tracingEnabled = getBooleanConfig("tracing.enabled", "TRACING_ENABLED", DEFAULT_TRACING_ENABLED);
+        tracingOtlpEndpoint = getStringConfig("tracing.otlp.endpoint", "TRACING_OTLP_ENDPOINT", null);
+
+        // Phase 5: Health checks configuration
+        healthChecksEnabled = getBooleanConfig("health.checks.enabled", "HEALTH_CHECKS_ENABLED", DEFAULT_HEALTH_CHECKS_ENABLED);
+        healthDiskMinMb = getIntConfig("health.checks.disk.min.mb", "HEALTH_CHECKS_DISK_MIN_MB", DEFAULT_HEALTH_DISK_MIN_MB);
+
+        // Phase 5: Request body configuration
+        requestBodyMaxSizeMb = getIntConfig("request.body.max.size.mb", "REQUEST_BODY_MAX_SIZE_MB", DEFAULT_REQUEST_BODY_MAX_SIZE_MB);
+        requestBodyJsonEnabled = getBooleanConfig("request.body.json.enabled", "REQUEST_BODY_JSON_ENABLED", DEFAULT_REQUEST_BODY_JSON_ENABLED);
+        requestBodyFormEnabled = getBooleanConfig("request.body.form.enabled", "REQUEST_BODY_FORM_ENABLED", DEFAULT_REQUEST_BODY_FORM_ENABLED);
+        requestBodyMultipartEnabled = getBooleanConfig("request.body.multipart.enabled", "REQUEST_BODY_MULTIPART_ENABLED", DEFAULT_REQUEST_BODY_MULTIPART_ENABLED);
+
+        // Phase 5: Rate limiting configuration
+        rateLimitEnabled = getBooleanConfig("rate.limit.enabled", "RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED);
+        rateLimitRequestsPerSecond = getIntConfig("rate.limit.requests.per.second", "RATE_LIMIT_REQUESTS_PER_SECOND", DEFAULT_RATE_LIMIT_REQUESTS_PER_SECOND);
+        rateLimitBurstSize = getIntConfig("rate.limit.burst.size", "RATE_LIMIT_BURST_SIZE", DEFAULT_RATE_LIMIT_BURST_SIZE);
+        rateLimitWhitelistIps = getStringConfig("rate.limit.whitelist.ips", "RATE_LIMIT_WHITELIST_IPS", "127.0.0.1,::1");
 
         validateConfiguration();
     }
@@ -208,5 +275,77 @@ public class ServerConfig {
         }
 
         return header.toString();
+    }
+
+    // Phase 5: Observability getters
+    public boolean isMetricsEnabled() {
+        return metricsEnabled;
+    }
+
+    public String getLoggingFormat() {
+        return loggingFormat;
+    }
+
+    public String getLoggingLevel() {
+        return loggingLevel;
+    }
+
+    public boolean isTracingEnabled() {
+        return tracingEnabled;
+    }
+
+    public String getTracingOtlpEndpoint() {
+        return tracingOtlpEndpoint;
+    }
+
+    public boolean isJsonLogging() {
+        return "json".equalsIgnoreCase(loggingFormat);
+    }
+
+    // Phase 5: Health checks getters
+    public boolean isHealthChecksEnabled() {
+        return healthChecksEnabled;
+    }
+
+    public int getHealthDiskMinMb() {
+        return healthDiskMinMb;
+    }
+
+    // Phase 5: Request body getters
+    public int getRequestBodyMaxSizeMb() {
+        return requestBodyMaxSizeMb;
+    }
+
+    public long getRequestBodyMaxSizeBytes() {
+        return (long) requestBodyMaxSizeMb * 1024 * 1024;
+    }
+
+    public boolean isRequestBodyJsonEnabled() {
+        return requestBodyJsonEnabled;
+    }
+
+    public boolean isRequestBodyFormEnabled() {
+        return requestBodyFormEnabled;
+    }
+
+    public boolean isRequestBodyMultipartEnabled() {
+        return requestBodyMultipartEnabled;
+    }
+
+    // Phase 5: Rate limiting getters
+    public boolean isRateLimitEnabled() {
+        return rateLimitEnabled;
+    }
+
+    public int getRateLimitRequestsPerSecond() {
+        return rateLimitRequestsPerSecond;
+    }
+
+    public int getRateLimitBurstSize() {
+        return rateLimitBurstSize;
+    }
+
+    public String getRateLimitWhitelistIps() {
+        return rateLimitWhitelistIps;
     }
 }
