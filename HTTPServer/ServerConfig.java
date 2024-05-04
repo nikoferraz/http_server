@@ -47,6 +47,18 @@ public class ServerConfig {
     private static final int DEFAULT_RATE_LIMIT_REQUESTS_PER_SECOND = 100;
     private static final int DEFAULT_RATE_LIMIT_BURST_SIZE = 20;
 
+    // Phase 6: Authentication defaults
+    private static final boolean DEFAULT_JWT_ENABLED = true;
+    private static final String DEFAULT_JWT_SECRET = "changeme";
+    private static final int DEFAULT_JWT_EXPIRATION_MINUTES = 60;
+    private static final boolean DEFAULT_APIKEY_ENABLED = true;
+
+    // Phase 6: Virtual hosts defaults
+    private static final boolean DEFAULT_VHOSTS_ENABLED = false;
+
+    // Phase 6: Routing defaults
+    private static final boolean DEFAULT_ROUTING_ENABLED = false;
+
     private Properties properties;
 
     // Configuration fields
@@ -87,6 +99,24 @@ public class ServerConfig {
     private int rateLimitRequestsPerSecond;
     private int rateLimitBurstSize;
     private String rateLimitWhitelistIps;
+
+    // Phase 6: Authentication fields
+    private boolean jwtEnabled;
+    private String jwtSecret;
+    private int jwtExpirationMinutes;
+    private boolean apiKeyEnabled;
+    private String apiKeys;
+
+    // Phase 6: Virtual hosts fields
+    private boolean virtualHostsEnabled;
+    private String virtualHostsConfig;
+    private String virtualHostsDefault;
+
+    // Phase 6: Routing fields
+    private boolean routingEnabled;
+    private String redirectsConfig;
+    private String rewritesConfig;
+    private String errorPagesConfig;
 
     public ServerConfig() {
         this(DEFAULT_CONFIG_FILE);
@@ -155,6 +185,24 @@ public class ServerConfig {
         rateLimitRequestsPerSecond = getIntConfig("rate.limit.requests.per.second", "RATE_LIMIT_REQUESTS_PER_SECOND", DEFAULT_RATE_LIMIT_REQUESTS_PER_SECOND);
         rateLimitBurstSize = getIntConfig("rate.limit.burst.size", "RATE_LIMIT_BURST_SIZE", DEFAULT_RATE_LIMIT_BURST_SIZE);
         rateLimitWhitelistIps = getStringConfig("rate.limit.whitelist.ips", "RATE_LIMIT_WHITELIST_IPS", "127.0.0.1,::1");
+
+        // Phase 6: Authentication configuration
+        jwtEnabled = getBooleanConfig("auth.jwt.enabled", "AUTH_JWT_ENABLED", DEFAULT_JWT_ENABLED);
+        jwtSecret = getStringConfig("auth.jwt.secret", "AUTH_JWT_SECRET", DEFAULT_JWT_SECRET);
+        jwtExpirationMinutes = getIntConfig("auth.jwt.expiration.minutes", "AUTH_JWT_EXPIRATION_MINUTES", DEFAULT_JWT_EXPIRATION_MINUTES);
+        apiKeyEnabled = getBooleanConfig("auth.apikey.enabled", "AUTH_APIKEY_ENABLED", DEFAULT_APIKEY_ENABLED);
+        apiKeys = getStringConfig("auth.apikeys", "AUTH_APIKEYS", null);
+
+        // Phase 6: Virtual hosts configuration
+        virtualHostsEnabled = getBooleanConfig("vhosts.enabled", "VHOSTS_ENABLED", DEFAULT_VHOSTS_ENABLED);
+        virtualHostsConfig = getStringConfig("vhosts.config", "VHOSTS_CONFIG", null);
+        virtualHostsDefault = getStringConfig("vhosts.default", "VHOSTS_DEFAULT", null);
+
+        // Phase 6: Routing configuration
+        routingEnabled = getBooleanConfig("routing.enabled", "ROUTING_ENABLED", DEFAULT_ROUTING_ENABLED);
+        redirectsConfig = getStringConfig("routing.redirects", "ROUTING_REDIRECTS", null);
+        rewritesConfig = getStringConfig("routing.rewrites", "ROUTING_REWRITES", null);
+        errorPagesConfig = getStringConfig("routing.error.pages", "ROUTING_ERROR_PAGES", null);
 
         validateConfiguration();
     }
@@ -347,5 +395,56 @@ public class ServerConfig {
 
     public String getRateLimitWhitelistIps() {
         return rateLimitWhitelistIps;
+    }
+
+    // Phase 6: Authentication getters
+    public boolean isJwtEnabled() {
+        return jwtEnabled;
+    }
+
+    public String getJwtSecret() {
+        return jwtSecret;
+    }
+
+    public int getJwtExpirationMinutes() {
+        return jwtExpirationMinutes;
+    }
+
+    public boolean isApiKeyEnabled() {
+        return apiKeyEnabled;
+    }
+
+    public String getApiKeys() {
+        return apiKeys;
+    }
+
+    // Phase 6: Virtual hosts getters
+    public boolean isVirtualHostsEnabled() {
+        return virtualHostsEnabled;
+    }
+
+    public String getVirtualHostsConfig() {
+        return virtualHostsConfig;
+    }
+
+    public String getVirtualHostsDefault() {
+        return virtualHostsDefault;
+    }
+
+    // Phase 6: Routing getters
+    public boolean isRoutingEnabled() {
+        return routingEnabled;
+    }
+
+    public String getRedirectsConfig() {
+        return redirectsConfig;
+    }
+
+    public String getRewritesConfig() {
+        return rewritesConfig;
+    }
+
+    public String getErrorPagesConfig() {
+        return errorPagesConfig;
     }
 }
