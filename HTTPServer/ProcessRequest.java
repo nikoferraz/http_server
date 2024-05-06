@@ -27,11 +27,6 @@ class ProcessRequest implements Runnable {
     private static final int HTTP_UNAUTHORIZED = 401;
     private static final int HTTP_METHOD_NOT_ALLOWED = 405;
     private static final int HTTP_PAYLOAD_TOO_LARGE = 413;
-    private static final Map<String, String> VALID_CREDENTIALS = new HashMap<>();
-    static {
-        // Initialize default credentials - user: admin, password: password
-        VALID_CREDENTIALS.put("admin", "password");
-    }
     private final File webroot;
     private final Socket socket;
     private Logger auditLog;
@@ -216,15 +211,6 @@ class ProcessRequest implements Runnable {
             } else if (routingResult.wasModified()) {
                 path = routingResult.getPath();
             }
-        }
-
-        // Phase 6: Handle login endpoint for JWT generation
-        if (path.equals("/auth/login") && method.equals("POST")) {
-            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
-                 Writer writer = new OutputStreamWriter(outputStream)) {
-                handleLoginEndpoint(writer, version, headers);
-            }
-            return;
         }
 
         // Phase 5: Route health check endpoints
@@ -670,9 +656,8 @@ class ProcessRequest implements Runnable {
             String username = decodedCredentials.substring(0, colonIndex);
             String password = decodedCredentials.substring(colonIndex + 1);
 
-            // Validate against credentials map
-            String validPassword = VALID_CREDENTIALS.get(username);
-            if (validPassword != null && validPassword.equals(password)) {
+            // Validate against credentials via AuthenticationManager
+            if (authManager.validateBasicAuthCredentials(username, password)) {
                 auditLog.info("Authentication successful for user: " + username);
                 return true;
             }
@@ -687,9 +672,6 @@ class ProcessRequest implements Runnable {
 
     private void sendUnauthorizedResponse(Writer writer, String version, Map<String, String> headers) throws IOException {
         String authMethods = "Basic Authentication";
-        if (authManager.isJwtEnabled()) {
-            authMethods += ", Bearer Token (JWT)";
-        }
         if (authManager.isApiKeyEnabled()) {
             authMethods += ", API Key (X-API-Key header)";
         }
@@ -702,10 +684,6 @@ class ProcessRequest implements Runnable {
         String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
         writer.write(httpVersion + " 401 Unauthorized\r\n");
         writer.write("WWW-Authenticate: Basic realm=\"HTTP Server\"\r\n");
-
-        if (authManager.isJwtEnabled()) {
-            writer.write("WWW-Authenticate: Bearer realm=\"HTTP Server\"\r\n");
-        }
 
         writer.write("Content-type: text/html; charset=utf-8\r\n");
         writer.write("Content-length: " + response.length() + "\r\n");
@@ -749,62 +727,6 @@ class ProcessRequest implements Runnable {
         writer.write("\r\n");
         writer.write(response);
         writer.flush();
-    }
-
-    // Phase 6: Login endpoint handler for JWT generation
-    private void handleLoginEndpoint(Writer writer, String version, Map<String, String> headers) throws IOException {
-        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
-
-        // Check if basic auth is provided
-        String authHeader = headers.get("authorization");
-        if (authHeader == null || !authHeader.startsWith("Basic ")) {
-            sendUnauthorizedResponse(writer, version, headers);
-            return;
-        }
-
-        // Validate basic auth credentials
-        AuthenticationManager.AuthResult authResult = authManager.authenticate(headers);
-        if (!authResult.isAuthenticated()) {
-            sendUnauthorizedResponse(writer, version, headers);
-            if (config.isMetricsEnabled()) {
-                metrics.incrementCounter("auth_login_failures");
-            }
-            return;
-        }
-
-        // Generate JWT token
-        String token = authManager.generateJWT(authResult.getUsername());
-        if (token == null) {
-            String errorResponse = "{\"error\":\"JWT generation failed\"}";
-            writer.write(httpVersion + " 500 Internal Server Error\r\n");
-            writer.write("Content-Type: application/json\r\n");
-            writer.write("Content-Length: " + errorResponse.length() + "\r\n");
-            writer.write("Connection: close\r\n");
-            writer.write("\r\n");
-            writer.write(errorResponse);
-            writer.flush();
-            return;
-        }
-
-        // Return JWT token
-        String responseBody = String.format(
-            "{\"token\":\"%s\",\"username\":\"%s\",\"expiresIn\":%d}",
-            token, authResult.getUsername(), config.getJwtExpirationMinutes() * 60
-        );
-
-        writer.write(httpVersion + " 200 OK\r\n");
-        writer.write("Content-Type: application/json\r\n");
-        writer.write("Content-Length: " + responseBody.length() + "\r\n");
-        writer.write("Connection: close\r\n");
-        writer.write("\r\n");
-        writer.write(responseBody);
-        writer.flush();
-
-        if (config.isMetricsEnabled()) {
-            metrics.incrementCounter("auth_login_success");
-        }
-
-        structuredLogger.logInfo(requestId, "JWT token generated for user: " + authResult.getUsername());
     }
 
     // Phase 5: API endpoint handler (POST/PUT/DELETE)

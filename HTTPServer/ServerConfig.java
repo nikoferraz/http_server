@@ -48,9 +48,6 @@ public class ServerConfig {
     private static final int DEFAULT_RATE_LIMIT_BURST_SIZE = 20;
 
     // Phase 6: Authentication defaults
-    private static final boolean DEFAULT_JWT_ENABLED = true;
-    private static final String DEFAULT_JWT_SECRET = "changeme";
-    private static final int DEFAULT_JWT_EXPIRATION_MINUTES = 60;
     private static final boolean DEFAULT_APIKEY_ENABLED = true;
 
     // Phase 6: Virtual hosts defaults
@@ -101,9 +98,6 @@ public class ServerConfig {
     private String rateLimitWhitelistIps;
 
     // Phase 6: Authentication fields
-    private boolean jwtEnabled;
-    private String jwtSecret;
-    private int jwtExpirationMinutes;
     private boolean apiKeyEnabled;
     private String apiKeys;
 
@@ -187,9 +181,6 @@ public class ServerConfig {
         rateLimitWhitelistIps = getStringConfig("rate.limit.whitelist.ips", "RATE_LIMIT_WHITELIST_IPS", "127.0.0.1,::1");
 
         // Phase 6: Authentication configuration
-        jwtEnabled = getBooleanConfig("auth.jwt.enabled", "AUTH_JWT_ENABLED", DEFAULT_JWT_ENABLED);
-        jwtSecret = getStringConfig("auth.jwt.secret", "AUTH_JWT_SECRET", DEFAULT_JWT_SECRET);
-        jwtExpirationMinutes = getIntConfig("auth.jwt.expiration.minutes", "AUTH_JWT_EXPIRATION_MINUTES", DEFAULT_JWT_EXPIRATION_MINUTES);
         apiKeyEnabled = getBooleanConfig("auth.apikey.enabled", "AUTH_APIKEY_ENABLED", DEFAULT_APIKEY_ENABLED);
         apiKeys = getStringConfig("auth.apikeys", "AUTH_APIKEYS", null);
 
@@ -398,17 +389,8 @@ public class ServerConfig {
     }
 
     // Phase 6: Authentication getters
-    public boolean isJwtEnabled() {
-        return jwtEnabled;
-    }
 
-    public String getJwtSecret() {
-        return jwtSecret;
-    }
 
-    public int getJwtExpirationMinutes() {
-        return jwtExpirationMinutes;
-    }
 
     public boolean isApiKeyEnabled() {
         return apiKeyEnabled;
