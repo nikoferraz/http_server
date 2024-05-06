@@ -49,6 +49,11 @@ class ProcessRequest implements Runnable {
     private StructuredLogger structuredLogger;
     private String requestId;
 
+    // Phase 6: Enterprise features
+    private AuthenticationManager authManager;
+    private VirtualHostManager vhostManager;
+    private RoutingEngine routingEngine;
+
 
     public ProcessRequest(File webroot, Socket socket, Logger auditLog) {
         this(webroot, socket, auditLog, new ServerConfig());
@@ -68,6 +73,11 @@ class ProcessRequest implements Runnable {
         this.bodyParser = new RequestBodyParser(config.getRequestBodyMaxSizeBytes());
         this.structuredLogger = new StructuredLogger(auditLog, config.isJsonLogging(), config.getLoggingLevel());
         this.requestId = structuredLogger.generateRequestId();
+
+        // Phase 6: Initialize enterprise features
+        this.authManager = new AuthenticationManager(config);
+        this.vhostManager = new VirtualHostManager(config, webroot);
+        this.routingEngine = new RoutingEngine(config);
     }
 
     public void setRateLimiter(RateLimiter rateLimiter) {
@@ -193,6 +203,30 @@ class ProcessRequest implements Runnable {
             return;
         }
 
+        // Phase 6: Process routing rules (redirects and rewrites)
+        if (routingEngine.isEnabled()) {
+            RoutingEngine.RoutingResult routingResult = routingEngine.processRequest(path);
+            if (routingResult.isRedirect()) {
+                try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                     Writer writer = new OutputStreamWriter(outputStream)) {
+                    routingEngine.sendRedirect(writer, version, routingResult.getRedirectStatusCode(),
+                                              routingResult.getRedirectLocation(), headers);
+                }
+                return;
+            } else if (routingResult.wasModified()) {
+                path = routingResult.getPath();
+            }
+        }
+
+        // Phase 6: Handle login endpoint for JWT generation
+        if (path.equals("/auth/login") && method.equals("POST")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                handleLoginEndpoint(writer, version, headers);
+            }
+            return;
+        }
+
         // Phase 5: Route health check endpoints
         if (config.isHealthChecksEnabled() && path.startsWith("/health/")) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
@@ -233,8 +267,11 @@ class ProcessRequest implements Runnable {
 
         fileName = fileName.substring(1);
 
+        // Phase 6: Resolve webroot using virtual host manager
+        File resolvedWebroot = vhostManager.resolveWebroot(headers);
+
         // Path traversal validation - normalize and validate BEFORE authentication
-        Path requestedPath = validateAndNormalizePath(fileName);
+        Path requestedPath = validateAndNormalizePath(fileName, resolvedWebroot);
         if (requestedPath == null) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
@@ -243,13 +280,26 @@ class ProcessRequest implements Runnable {
             return;
         }
 
-        // Check authentication AFTER path validation to prevent information disclosure
-        if (!validateBasicAuth(headers)) {
-            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
-                 Writer writer = new OutputStreamWriter(outputStream)) {
-                sendUnauthorizedResponse(writer, version, headers);
+        // Phase 6: Check authentication using AuthenticationManager
+        if (authManager.requiresAuthentication(path)) {
+            AuthenticationManager.AuthResult authResult = authManager.authenticate(headers);
+            if (!authResult.isAuthenticated()) {
+                try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                     Writer writer = new OutputStreamWriter(outputStream)) {
+                    sendUnauthorizedResponse(writer, version, headers);
+                    if (config.isMetricsEnabled()) {
+                        metrics.incrementCounter("auth_failures", "path=" + path);
+                    }
+                }
+                return;
             }
-            return;
+
+            // Log successful authentication
+            structuredLogger.logInfo(requestId, "Authentication successful: user=" + authResult.getUsername() +
+                                               ", method=" + authResult.getMethod());
+            if (config.isMetricsEnabled()) {
+                metrics.incrementCounter("auth_success", "method=" + authResult.getMethod());
+            }
         }
 
         String mimeType = URLConnection.getFileNameMap().getContentTypeFor(fileName);
@@ -563,7 +613,7 @@ class ProcessRequest implements Runnable {
         auditLog.info(logInfo);
     }
 
-    private Path validateAndNormalizePath(String fileName) {
+    private Path validateAndNormalizePath(String fileName, File webrootToUse) {
         try {
             // Reject paths containing directory traversal attempts
             if (fileName.contains("..")) {
@@ -572,8 +622,8 @@ class ProcessRequest implements Runnable {
             }
 
             // Normalize the path
-            Path requestedPath = Paths.get(webroot.getCanonicalPath(), fileName).normalize();
-            Path webrootPath = Paths.get(webroot.getCanonicalPath()).normalize();
+            Path requestedPath = Paths.get(webrootToUse.getCanonicalPath(), fileName).normalize();
+            Path webrootPath = Paths.get(webrootToUse.getCanonicalPath()).normalize();
 
             // Verify the resolved path is within the webroot
             if (!requestedPath.startsWith(webrootPath)) {
@@ -636,14 +686,27 @@ class ProcessRequest implements Runnable {
     }
 
     private void sendUnauthorizedResponse(Writer writer, String version, Map<String, String> headers) throws IOException {
+        String authMethods = "Basic Authentication";
+        if (authManager.isJwtEnabled()) {
+            authMethods += ", Bearer Token (JWT)";
+        }
+        if (authManager.isApiKeyEnabled()) {
+            authMethods += ", API Key (X-API-Key header)";
+        }
+
         String response = "<HTML>\r\n<head><title>Unauthorized</title></head>\r\n"
                 + "<body><h1>401 Unauthorized</h1>\r\n"
-                + "<p>Please provide valid credentials using Basic Authentication.</p>\r\n"
+                + "<p>Please provide valid credentials using one of: " + authMethods + "</p>\r\n"
                 + "</body></html>\r\n";
 
         String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
         writer.write(httpVersion + " 401 Unauthorized\r\n");
         writer.write("WWW-Authenticate: Basic realm=\"HTTP Server\"\r\n");
+
+        if (authManager.isJwtEnabled()) {
+            writer.write("WWW-Authenticate: Bearer realm=\"HTTP Server\"\r\n");
+        }
+
         writer.write("Content-type: text/html; charset=utf-8\r\n");
         writer.write("Content-length: " + response.length() + "\r\n");
         addCommonHeaders(writer, headers);
@@ -688,11 +751,68 @@ class ProcessRequest implements Runnable {
         writer.flush();
     }
 
+    // Phase 6: Login endpoint handler for JWT generation
+    private void handleLoginEndpoint(Writer writer, String version, Map<String, String> headers) throws IOException {
+        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
+
+        // Check if basic auth is provided
+        String authHeader = headers.get("authorization");
+        if (authHeader == null || !authHeader.startsWith("Basic ")) {
+            sendUnauthorizedResponse(writer, version, headers);
+            return;
+        }
+
+        // Validate basic auth credentials
+        AuthenticationManager.AuthResult authResult = authManager.authenticate(headers);
+        if (!authResult.isAuthenticated()) {
+            sendUnauthorizedResponse(writer, version, headers);
+            if (config.isMetricsEnabled()) {
+                metrics.incrementCounter("auth_login_failures");
+            }
+            return;
+        }
+
+        // Generate JWT token
+        String token = authManager.generateJWT(authResult.getUsername());
+        if (token == null) {
+            String errorResponse = "{\"error\":\"JWT generation failed\"}";
+            writer.write(httpVersion + " 500 Internal Server Error\r\n");
+            writer.write("Content-Type: application/json\r\n");
+            writer.write("Content-Length: " + errorResponse.length() + "\r\n");
+            writer.write("Connection: close\r\n");
+            writer.write("\r\n");
+            writer.write(errorResponse);
+            writer.flush();
+            return;
+        }
+
+        // Return JWT token
+        String responseBody = String.format(
+            "{\"token\":\"%s\",\"username\":\"%s\",\"expiresIn\":%d}",
+            token, authResult.getUsername(), config.getJwtExpirationMinutes() * 60
+        );
+
+        writer.write(httpVersion + " 200 OK\r\n");
+        writer.write("Content-Type: application/json\r\n");
+        writer.write("Content-Length: " + responseBody.length() + "\r\n");
+        writer.write("Connection: close\r\n");
+        writer.write("\r\n");
+        writer.write(responseBody);
+        writer.flush();
+
+        if (config.isMetricsEnabled()) {
+            metrics.incrementCounter("auth_login_success");
+        }
+
+        structuredLogger.logInfo(requestId, "JWT token generated for user: " + authResult.getUsername());
+    }
+
     // Phase 5: API endpoint handler (POST/PUT/DELETE)
     private void handleApiEndpoint(String method, String path, String version, Map<String, String> headers,
                                    BufferedReader inputStream, Writer writer) throws IOException {
-        // Check authentication for API endpoints
-        if (!validateBasicAuth(headers)) {
+        // Phase 6: Check authentication using AuthenticationManager
+        AuthenticationManager.AuthResult authResult = authManager.authenticate(headers);
+        if (!authResult.isAuthenticated()) {
             sendUnauthorizedResponse(writer, version, headers);
             return;
         }
