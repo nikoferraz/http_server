@@ -9,15 +9,23 @@ import java.util.Set;
 
 public class RateLimiter {
 
+    private static final int DEFAULT_MAX_BUCKETS = 10000;
+
     private final int requestsPerSecond;
     private final int burstSize;
+    private final int maxBuckets;
     private final ConcurrentHashMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
     private final Set<String> whitelist = new HashSet<>();
     private final ScheduledExecutorService cleanupExecutor;
 
     public RateLimiter(int requestsPerSecond, int burstSize) {
+        this(requestsPerSecond, burstSize, DEFAULT_MAX_BUCKETS);
+    }
+
+    public RateLimiter(int requestsPerSecond, int burstSize, int maxBuckets) {
         this.requestsPerSecond = requestsPerSecond;
         this.burstSize = burstSize;
+        this.maxBuckets = maxBuckets;
 
         // Schedule periodic cleanup of old entries
         cleanupExecutor = Executors.newScheduledThreadPool(1);
@@ -42,6 +50,11 @@ public class RateLimiter {
             return new RateLimitResult(true, requestsPerSecond, requestsPerSecond, 0);
         }
 
+        // Check if at capacity and evict LRU bucket if needed
+        if (buckets.size() >= maxBuckets && !buckets.containsKey(clientIp)) {
+            evictLRUBucket();
+        }
+
         // Get or create bucket for this IP
         TokenBucket bucket = buckets.computeIfAbsent(clientIp, k -> new TokenBucket(requestsPerSecond, burstSize));
 
@@ -54,6 +67,23 @@ public class RateLimiter {
         return new RateLimitResult(allowed, requestsPerSecond, remaining, resetTime);
     }
 
+    private void evictLRUBucket() {
+        String lruKey = null;
+        long lruTime = Long.MAX_VALUE;
+
+        for (var entry : buckets.entrySet()) {
+            long accessTime = entry.getValue().getLastAccessTime();
+            if (accessTime < lruTime) {
+                lruTime = accessTime;
+                lruKey = entry.getKey();
+            }
+        }
+
+        if (lruKey != null) {
+            buckets.remove(lruKey);
+        }
+    }
+
     private void cleanup() {
         long now = System.currentTimeMillis();
         long maxAge = TimeUnit.MINUTES.toMillis(5); // Remove buckets inactive for 5 minutes
@@ -62,6 +92,14 @@ public class RateLimiter {
             TokenBucket bucket = entry.getValue();
             return (now - bucket.getLastAccessTime()) > maxAge;
         });
+    }
+
+    public int getActiveBucketCount() {
+        return buckets.size();
+    }
+
+    public int getMaxBuckets() {
+        return maxBuckets;
     }
 
     public void shutdown() {
