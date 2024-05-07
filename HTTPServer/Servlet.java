@@ -4,6 +4,9 @@ import javax.net.ssl.SSLServerSocket;
 import java.io.*;
 import java.net.*;
 import java.util.concurrent.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.logging.FileHandler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -36,7 +39,15 @@ public class Servlet extends Thread{
         this.servletNumber = servletNumber;
         this.port = port;
         this.config = config;
-        this.threadPool = Executors.newFixedThreadPool(config.getThreadPoolSize());
+        // Create thread pool with bounded queue to prevent OOM under load
+        BlockingQueue<Runnable> queue = new ArrayBlockingQueue<>(config.getRequestQueueLimit());
+        this.threadPool = new ThreadPoolExecutor(
+            config.getThreadPoolSize(),
+            config.getThreadPoolSize(),
+            0L, TimeUnit.MILLISECONDS,
+            queue,
+            new ThreadPoolExecutor.AbortPolicy()
+        );
         this.useTLS = config.isTlsEnabled();
 
         // Initialize TLS if enabled
