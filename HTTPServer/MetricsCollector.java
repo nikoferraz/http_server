@@ -6,10 +6,46 @@ import java.util.concurrent.atomic.DoubleAdder;
 import java.util.Map;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedList;
+import java.util.Collections;
 
 public class MetricsCollector {
 
+    private static final int MAX_OBSERVATIONS = 1000;
     private static MetricsCollector instance;
+
+    // Thread-safe bounded list for histogram observations
+    private static class BoundedList {
+        private final LinkedList<Double> list = new LinkedList<>();
+        private final Object lock = new Object();
+
+        public void add(Double value) {
+            synchronized (lock) {
+                list.add(value);
+                if (list.size() > MAX_OBSERVATIONS) {
+                    list.removeFirst();
+                }
+            }
+        }
+
+        public List<Double> getSnapshot() {
+            synchronized (lock) {
+                return new ArrayList<>(list);
+            }
+        }
+
+        public boolean isEmpty() {
+            synchronized (lock) {
+                return list.isEmpty();
+            }
+        }
+
+        public int size() {
+            synchronized (lock) {
+                return list.size();
+            }
+        }
+    }
 
     // Counter metrics
     private final ConcurrentHashMap<String, AtomicLong> counters = new ConcurrentHashMap<>();
@@ -23,8 +59,8 @@ public class MetricsCollector {
     // Histogram buckets for response size (in bytes)
     private static final long[] SIZE_BUCKETS = {100, 1000, 10000, 100000, 1000000, 10000000};
 
-    // Store histogram observations
-    private final ConcurrentHashMap<String, List<Double>> histograms = new ConcurrentHashMap<>();
+    // Store histogram observations (bounded to prevent memory leaks)
+    private final ConcurrentHashMap<String, BoundedList> histograms = new ConcurrentHashMap<>();
 
     private MetricsCollector() {
         initializeMetrics();
@@ -67,7 +103,7 @@ public class MetricsCollector {
 
     public void observeHistogram(String name, double value, String... labels) {
         String key = buildKey(name, labels);
-        histograms.computeIfAbsent(key, k -> new ArrayList<>()).add(value);
+        histograms.computeIfAbsent(key, k -> new BoundedList()).add(value);
     }
 
     private String buildKey(String name, String... labels) {
@@ -149,7 +185,7 @@ public class MetricsCollector {
         }
 
         // Export histograms
-        for (Map.Entry<String, List<Double>> entry : histograms.entrySet()) {
+        for (Map.Entry<String, BoundedList> entry : histograms.entrySet()) {
             String[] parts = parseKey(entry.getKey());
             String name = parts[0];
             String labels = parts[1];
@@ -158,10 +194,11 @@ public class MetricsCollector {
                 sb.append("# TYPE ").append(name).append(" histogram\n");
             }
 
-            List<Double> observations = entry.getValue();
-            if (observations.isEmpty()) {
+            if (entry.getValue().isEmpty()) {
                 continue;
             }
+
+            List<Double> observations = entry.getValue().getSnapshot();
 
             // Calculate histogram buckets
             if (name.equals("http_request_duration_seconds")) {
