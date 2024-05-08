@@ -1,6 +1,7 @@
 package HTTPServer;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.attribute.FileTime;
@@ -29,20 +30,28 @@ public class CacheManager {
     private static final String DEFAULT_CACHE_CONTROL = "public, max-age=3600, must-revalidate";
 
     /**
-     * Generates a strong ETag based on file content hash (MD5).
-     * For large files, uses weak ETag based on size + modification time.
+     * Generates a strong ETag based on file content hash (MD5) using streaming to avoid loading entire file into memory.
+     * For very large files, uses weak ETag based on size + modification time.
      */
     public String generateETag(File file) {
         try {
-            // For files larger than 10MB, use weak ETag (size + mtime)
-            if (file.length() > 10_485_760) {
+            // For files larger than 100MB, use weak ETag to avoid hash computation overhead
+            if (file.length() > 104_857_600) {
                 return generateWeakETag(file);
             }
 
-            // Generate strong ETag using MD5 hash
-            byte[] fileContent = Files.readAllBytes(file.toPath());
+            // Generate strong ETag using MD5 hash with streaming
             MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] hash = md.digest(fileContent);
+
+            try (FileInputStream fis = new FileInputStream(file)) {
+                byte[] buffer = new byte[8192];
+                int bytesRead;
+                while ((bytesRead = fis.read(buffer)) != -1) {
+                    md.update(buffer, 0, bytesRead);
+                }
+            }
+
+            byte[] hash = md.digest();
 
             StringBuilder sb = new StringBuilder("\"");
             for (byte b : hash) {
