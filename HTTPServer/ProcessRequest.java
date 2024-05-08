@@ -20,6 +20,7 @@ import java.util.logging.Level;
 class ProcessRequest implements Runnable {
 
     private static final int MAX_REQUEST_SIZE = 8192; // 8KB max request size
+    private static final int MAX_HEADERS_SIZE = 8192; // 8KB max headers size
     private static final int REQUEST_TIMEOUT_MS = 5000; // 5 second timeout
     private static final long MAX_FILE_SIZE = 1073741824L; // 1GB max file size
     private static final int HTTP_OK = 200;
@@ -110,10 +111,17 @@ class ProcessRequest implements Runnable {
             method = parts[0];
             path = parts[1];
 
-            // Read HTTP headers
+            // Read HTTP headers with size validation
             Map<String, String> headers = new HashMap<>();
             String headerLine;
+            int totalHeadersSize = requestLine.length();
             while ((headerLine = inputStream.readLine()) != null && !headerLine.isEmpty()) {
+                // Check if adding this header would exceed the limit
+                totalHeadersSize += headerLine.length() + 2; // +2 for \r\n
+                if (totalHeadersSize > MAX_HEADERS_SIZE) {
+                    throw new IOException("Request headers size exceeds maximum allowed size");
+                }
+
                 int colonIndex = headerLine.indexOf(':');
                 if (colonIndex > 0) {
                     String name = headerLine.substring(0, colonIndex).trim();
