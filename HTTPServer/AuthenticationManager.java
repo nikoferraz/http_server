@@ -83,7 +83,7 @@ public class AuthenticationManager {
         return new AuthResult(false, null, null);
     }
 
-    private AuthResult validateBasicAuth(String authHeader) {
+    public AuthResult validateBasicAuth(String authHeader) {
         try {
             String encodedCredentials = authHeader.substring(6);
             String decodedCredentials = new String(

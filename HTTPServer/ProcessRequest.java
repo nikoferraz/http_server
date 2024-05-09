@@ -10,7 +10,6 @@ import java.nio.file.Paths;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Base64;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -638,45 +637,6 @@ class ProcessRequest implements Runnable {
         }
     }
 
-    private boolean validateBasicAuth(Map<String, String> headers) {
-        String authHeader = headers.get("authorization");
-
-        // No authorization header - unauthorized
-        if (authHeader == null || authHeader.isEmpty()) {
-            return false;
-        }
-
-        // Check if it's Basic auth
-        if (!authHeader.startsWith("Basic ")) {
-            return false;
-        }
-
-        try {
-            // Extract and decode the Base64 credentials
-            String encodedCredentials = authHeader.substring(6);
-            String decodedCredentials = new String(Base64.getDecoder().decode(encodedCredentials), StandardCharsets.UTF_8);
-
-            int colonIndex = decodedCredentials.indexOf(':');
-            if (colonIndex <= 0) {
-                return false;
-            }
-
-            String username = decodedCredentials.substring(0, colonIndex);
-            String password = decodedCredentials.substring(colonIndex + 1);
-
-            // Validate against credentials via AuthenticationManager
-            if (authManager.validateBasicAuthCredentials(username, password)) {
-                auditLog.info("Authentication successful for user: " + username);
-                return true;
-            }
-
-            auditLog.warning("Authentication failed for user: " + username);
-            return false;
-        } catch (IllegalArgumentException e) {
-            System.err.println("Invalid Base64 encoding in Authorization header");
-            return false;
-        }
-    }
 
     private void sendUnauthorizedResponse(Writer writer, String version, Map<String, String> headers) throws IOException {
         String authMethods = "Basic Authentication";
