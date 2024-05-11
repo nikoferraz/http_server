@@ -87,46 +87,73 @@ public class SimpleProfiler {
     private static void testCacheManager() throws Exception {
         System.out.println("\n## CACHE MANAGER PERFORMANCE");
         System.out.println("-".repeat(80));
-        
+
         CacheManager cache = new CacheManager();
+        cache.clearCache();
         Path tempDir = Files.createTempDirectory("cachetest");
-        
+
         try {
             // Create test files
             File smallFile = tempDir.resolve("small.html").toFile();
             File mediumFile = tempDir.resolve("medium.html").toFile();
             File largeFile = tempDir.resolve("large.html").toFile();
-            
+
             Files.write(smallFile.toPath(), generateBytes(10 * 1024));
             Files.write(mediumFile.toPath(), generateBytes(100 * 1024));
             Files.write(largeFile.toPath(), generateBytes(1024 * 1024));
-            
-            // Measure ETag calculation time
+
+            // Measure UNCACHED ETag calculation time
             long start = System.nanoTime();
             String etag = cache.generateETag(smallFile);
             long smallTime = System.nanoTime() - start;
-            
+
             start = System.nanoTime();
             String etag2 = cache.generateETag(mediumFile);
             long mediumTime = System.nanoTime() - start;
-            
+
             start = System.nanoTime();
             String etag3 = cache.generateETag(largeFile);
             long largeTime = System.nanoTime() - start;
-            
-            System.out.printf("Small file ETag (10KB): %.2f ms\n", smallTime / 1_000_000.0);
-            System.out.printf("Medium file ETag (100KB): %.2f ms\n", mediumTime / 1_000_000.0);
-            System.out.printf("Large file ETag (1MB): %.2f ms\n", largeTime / 1_000_000.0);
-            
-            // Test cache validation performance
+
+            System.out.printf("Small file ETag (10KB) - UNCACHED: %.2f ms\n", smallTime / 1_000_000.0);
+            System.out.printf("Medium file ETag (100KB) - UNCACHED: %.2f ms\n", mediumTime / 1_000_000.0);
+            System.out.printf("Large file ETag (1MB) - UNCACHED: %.2f ms\n", largeTime / 1_000_000.0);
+
+            // Measure CACHED ETag performance
             start = System.nanoTime();
             for (int i = 0; i < 10000; i++) {
-                cache.isModifiedByETag(etag, etag);
+                cache.generateETag(smallFile); // Cache hit
             }
-            long cacheCheckTime = System.nanoTime() - start;
-            System.out.printf("Cache validation (10k checks): %.2f ms (%.4f µs/check)\n", 
-                cacheCheckTime / 1_000_000.0, (cacheCheckTime / 10000) / 1000.0);
-            
+            long smallCachedTime = System.nanoTime() - start;
+
+            start = System.nanoTime();
+            for (int i = 0; i < 10000; i++) {
+                cache.generateETag(mediumFile); // Cache hit
+            }
+            long mediumCachedTime = System.nanoTime() - start;
+
+            start = System.nanoTime();
+            for (int i = 0; i < 10000; i++) {
+                cache.generateETag(largeFile); // Cache hit
+            }
+            long largeCachedTime = System.nanoTime() - start;
+
+            double smallSpeedup = (double) smallTime / (smallCachedTime / 10000);
+            double mediumSpeedup = (double) mediumTime / (mediumCachedTime / 10000);
+            double largeSpeedup = (double) largeTime / (largeCachedTime / 10000);
+
+            System.out.printf("Small file ETag (10KB) - CACHED avg: %.4f µs (%.0fx faster)\n",
+                (smallCachedTime / 10000.0) / 1000.0, smallSpeedup);
+            System.out.printf("Medium file ETag (100KB) - CACHED avg: %.4f µs (%.0fx faster)\n",
+                (mediumCachedTime / 10000.0) / 1000.0, mediumSpeedup);
+            System.out.printf("Large file ETag (1MB) - CACHED avg: %.4f µs (%.0fx faster)\n",
+                (largeCachedTime / 10000.0) / 1000.0, largeSpeedup);
+
+            // Test cache statistics
+            System.out.printf("Cache hit rate: %.2f%% (%d hits, %d misses)\n",
+                cache.getCacheHitRate() * 100, cache.getCacheHits(), cache.getCacheMisses());
+            System.out.printf("Cache size: %d entries\n", cache.getCacheSize());
+
         } finally {
             deleteDirectory(tempDir.toFile());
         }

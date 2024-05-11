@@ -11,12 +11,15 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 import java.util.logging.Level;
 
 /**
  * Manages HTTP caching with ETag and Last-Modified support.
  * Implements conditional requests (If-None-Match, If-Modified-Since).
+ * Includes ETag caching with LRU eviction to improve performance on repeated accesses.
  */
 public class CacheManager {
 
@@ -29,11 +32,72 @@ public class CacheManager {
     // Default cache control for static assets (1 hour)
     private static final String DEFAULT_CACHE_CONTROL = "public, max-age=3600, must-revalidate";
 
+    // ETag cache configuration
+    private static final int MAX_ETAG_CACHE_SIZE = 10_000;
+
+    // ETag cache storage
+    private final ConcurrentHashMap<String, CachedETag> etagCache = new ConcurrentHashMap<>();
+
+    // Cache statistics
+    private final AtomicLong cacheHits = new AtomicLong(0);
+    private final AtomicLong cacheMisses = new AtomicLong(0);
+
+    /**
+     * Cached ETag entry with validation info.
+     */
+    private static class CachedETag {
+        final String etag;
+        final long lastModified;
+        final long cacheTime;
+
+        CachedETag(String etag, long lastModified) {
+            this.etag = etag;
+            this.lastModified = lastModified;
+            this.cacheTime = System.currentTimeMillis();
+        }
+
+        /**
+         * Check if cache entry is still valid.
+         */
+        boolean isValid(File file) {
+            return file.lastModified() == this.lastModified;
+        }
+    }
+
     /**
      * Generates a strong ETag based on file content hash (MD5) using streaming to avoid loading entire file into memory.
      * For very large files, uses weak ETag based on size + modification time.
+     * Caches ETags to avoid recalculation on repeated access.
      */
     public String generateETag(File file) {
+        String key = file.getAbsolutePath();
+        CachedETag cached = etagCache.get(key);
+
+        // Check cache validity
+        if (cached != null && cached.isValid(file)) {
+            cacheHits.incrementAndGet();
+            return cached.etag;
+        }
+
+        // Cache miss - compute ETag
+        cacheMisses.incrementAndGet();
+        String etag = computeETag(file);
+
+        // Add to cache
+        etagCache.put(key, new CachedETag(etag, file.lastModified()));
+
+        // Evict oldest entry if cache is full
+        if (etagCache.size() > MAX_ETAG_CACHE_SIZE) {
+            evictLRU();
+        }
+
+        return etag;
+    }
+
+    /**
+     * Computes the actual ETag value for a file.
+     */
+    private String computeETag(File file) {
         try {
             // For files larger than 100MB, use weak ETag to avoid hash computation overhead
             if (file.length() > 104_857_600) {
@@ -64,6 +128,25 @@ public class CacheManager {
         } catch (IOException | NoSuchAlgorithmException e) {
             logger.log(Level.WARNING, "Failed to generate strong ETag, falling back to weak ETag", e);
             return generateWeakETag(file);
+        }
+    }
+
+    /**
+     * Evicts the least recently used (oldest) cache entry.
+     */
+    private void evictLRU() {
+        String oldestKey = null;
+        long oldestTime = Long.MAX_VALUE;
+
+        for (Map.Entry<String, CachedETag> entry : etagCache.entrySet()) {
+            if (entry.getValue().cacheTime < oldestTime) {
+                oldestTime = entry.getValue().cacheTime;
+                oldestKey = entry.getKey();
+            }
+        }
+
+        if (oldestKey != null) {
+            etagCache.remove(oldestKey);
         }
     }
 
@@ -187,5 +270,46 @@ public class CacheManager {
      */
     public String getHttpDate() {
         return HTTP_DATE_FORMAT.format(ZonedDateTime.now(ZoneId.of("GMT")));
+    }
+
+    /**
+     * Gets the current ETag cache hit rate.
+     * @return Hit rate between 0.0 and 1.0
+     */
+    public double getCacheHitRate() {
+        long hits = cacheHits.get();
+        long misses = cacheMisses.get();
+        long total = hits + misses;
+        return total == 0 ? 0.0 : (double) hits / total;
+    }
+
+    /**
+     * Gets the current size of the ETag cache.
+     */
+    public long getCacheSize() {
+        return etagCache.size();
+    }
+
+    /**
+     * Clears the ETag cache and resets statistics.
+     */
+    public void clearCache() {
+        etagCache.clear();
+        cacheHits.set(0);
+        cacheMisses.set(0);
+    }
+
+    /**
+     * Gets the number of cache hits.
+     */
+    public long getCacheHits() {
+        return cacheHits.get();
+    }
+
+    /**
+     * Gets the number of cache misses.
+     */
+    public long getCacheMisses() {
+        return cacheMisses.get();
     }
 }
