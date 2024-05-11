@@ -52,6 +52,10 @@ class ProcessRequest implements Runnable {
     private VirtualHostManager vhostManager;
     private RoutingEngine routingEngine;
 
+    private SecurityHeadersHandler securityHeadersHandler;
+    private TraceContextHandler traceContextHandler;
+    private GracefulShutdownHandler gracefulShutdownHandler;
+
     public ProcessRequest(File webroot, Socket socket, Logger auditLog) {
         this(webroot, socket, auditLog, new ServerConfig());
     }
@@ -73,6 +77,13 @@ class ProcessRequest implements Runnable {
         this.authManager = new AuthenticationManager(config);
         this.vhostManager = new VirtualHostManager(config, webroot);
         this.routingEngine = new RoutingEngine(config);
+
+        this.securityHeadersHandler = new SecurityHeadersHandler();
+        this.traceContextHandler = new TraceContextHandler();
+    }
+
+    public void setGracefulShutdownHandler(GracefulShutdownHandler handler) {
+        this.gracefulShutdownHandler = handler;
     }
 
     public void setRateLimiter(RateLimiter rateLimiter) {
@@ -86,8 +97,25 @@ class ProcessRequest implements Runnable {
         long totalStartTime = System.currentTimeMillis();
 
         try {
+            if (gracefulShutdownHandler != null) {
+                gracefulShutdownHandler.incrementActiveConnections();
+            }
+
             if (config.isMetricsEnabled()) {
                 metrics.incrementGauge("http_active_connections");
+            }
+
+            if (gracefulShutdownHandler != null && gracefulShutdownHandler.isShuttingDown()) {
+                try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                     Writer writer = new OutputStreamWriter(outputStream)) {
+                    String httpVersion = "HTTP/1.1";
+                    writer.write(httpVersion + " 503 Service Unavailable\r\n");
+                    writer.write("Content-Length: 0\r\n");
+                    writer.write("Connection: close\r\n");
+                    writer.write("\r\n");
+                    writer.flush();
+                }
+                return;
             }
 
             int socketTimeout = config.isKeepAliveEnabled() ?
@@ -144,6 +172,12 @@ class ProcessRequest implements Runnable {
                     String connectionHeader = headers.get("connection");
                     keepAlive = config.isKeepAliveEnabled() && shouldKeepAlive(connectionHeader, version);
 
+                    TraceContextHandler.TraceContext traceContext =
+                        traceContextHandler.extractContext(headers.get("traceparent"));
+                    String traceId = traceContext.getTraceId();
+                    String spanId = traceContext.getSpanId();
+                    String traceparent = traceContext.toTraceparent();
+
                     if (config.isRateLimitEnabled() && rateLimiter != null) {
                         String clientIp = socket.getRemoteSocketAddress().toString();
                         RateLimiter.RateLimitResult rateLimitResult = rateLimiter.tryAcquire(clientIp);
@@ -170,7 +204,7 @@ class ProcessRequest implements Runnable {
                         keepAlive = false;
                     }
 
-                    routeRequest(parts, headers, inputStream, keepAlive);
+                    routeRequest(parts, headers, inputStream, keepAlive, traceId, traceparent);
                     statusCode = 200;
 
                 } catch (java.net.SocketTimeoutException e) {
@@ -203,6 +237,10 @@ class ProcessRequest implements Runnable {
         } catch (Exception e) {
             errorLog.log(Level.SEVERE, "Error in request handler", e);
         } finally {
+            if (gracefulShutdownHandler != null) {
+                gracefulShutdownHandler.decrementActiveConnections();
+            }
+
             try {
                 socket.close();
             } catch (IOException e) {
@@ -234,10 +272,14 @@ class ProcessRequest implements Runnable {
     }
 
     public void routeRequest(String[] requestHeader, Map<String, String> headers, BufferedReader inputStream) throws IOException {
-        routeRequest(requestHeader, headers, inputStream, true);
+        routeRequest(requestHeader, headers, inputStream, true, null, null);
     }
 
     public void routeRequest(String[] requestHeader, Map<String, String> headers, BufferedReader inputStream, boolean keepAlive) throws IOException {
+        routeRequest(requestHeader, headers, inputStream, keepAlive, null, null);
+    }
+
+    public void routeRequest(String[] requestHeader, Map<String, String> headers, BufferedReader inputStream, boolean keepAlive, String traceId, String traceparent) throws IOException {
         if (requestHeader.length < 2) {
             throw new IOException("Invalid HTTP request: missing method or path");
         }
@@ -538,11 +580,16 @@ class ProcessRequest implements Runnable {
     }
 
     private void sendHeader(Writer writer, String responseCode, String mimeType, int length) throws IOException {
-        sendHeader(writer, responseCode, mimeType, length, null, null, false, null, true);
+        sendHeader(writer, responseCode, mimeType, length, null, null, false, null, true, null);
     }
 
     private void sendHeader(Writer writer, String responseCode, String mimeType, int length,
                            String etag, String lastModified, boolean compressed, Map<String, String> headers, boolean keepAlive) throws IOException {
+        sendHeader(writer, responseCode, mimeType, length, etag, lastModified, compressed, headers, keepAlive, null);
+    }
+
+    private void sendHeader(Writer writer, String responseCode, String mimeType, int length,
+                           String etag, String lastModified, boolean compressed, Map<String, String> headers, boolean keepAlive, String traceparent) throws IOException {
         writer.write(responseCode + "\r\n");
         writer.write("Date: " + cacheManager.getHttpDate() + "\r\n");
         writer.write("Server: HTTPServer/2.0\r\n");
@@ -564,13 +611,17 @@ class ProcessRequest implements Runnable {
             writer.write("Vary: Accept-Encoding\r\n");
         }
 
-        addCommonHeaders(writer, headers, keepAlive);
+        addCommonHeaders(writer, headers, keepAlive, traceparent);
 
         writer.write("\r\n");
         writer.flush();
     }
 
     private void addCommonHeaders(Writer writer, Map<String, String> headers, boolean keepAlive) throws IOException {
+        addCommonHeaders(writer, headers, keepAlive, null);
+    }
+
+    private void addCommonHeaders(Writer writer, Map<String, String> headers, boolean keepAlive, String traceparent) throws IOException {
         if (useHTTP11) {
             if (keepAlive) {
                 writer.write("Connection: keep-alive\r\n");
@@ -586,6 +637,12 @@ class ProcessRequest implements Runnable {
             if (hstsHeader != null) {
                 writer.write("Strict-Transport-Security: " + hstsHeader + "\r\n");
             }
+        }
+
+        securityHeadersHandler.addSecurityHeaders(writer, config.isTlsEnabled());
+
+        if (traceparent != null) {
+            writer.write("Traceparent: " + traceparent + "\r\n");
         }
     }
 
