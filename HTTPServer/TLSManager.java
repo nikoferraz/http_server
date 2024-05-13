@@ -7,6 +7,7 @@ import java.security.*;
 import java.security.cert.CertificateException;
 import java.util.logging.Logger;
 import java.util.logging.Level;
+import java.lang.reflect.Method;
 
 /**
  * Manages TLS/SSL configuration and server socket creation.
@@ -37,9 +38,29 @@ public class TLSManager {
 
     private ServerConfig config;
     private SSLContext sslContext;
+    private boolean alpnSupported;
 
     public TLSManager(ServerConfig config) {
         this.config = config;
+        this.alpnSupported = checkALPNSupport();
+    }
+
+    private boolean checkALPNSupport() {
+        try {
+            SSLSocket testSocket = null;
+            return testSocket != null || testSocketClassHasALPN();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean testSocketClassHasALPN() {
+        try {
+            SSLSocket.class.getMethod("getApplicationProtocol");
+            return true;
+        } catch (NoSuchMethodException e) {
+            return false;
+        }
     }
 
     /**
@@ -80,7 +101,7 @@ public class TLSManager {
     }
 
     /**
-     * Creates an SSLServerSocket with secure configuration.
+     * Creates an SSLServerSocket with secure configuration and ALPN support.
      * @param port The port to bind to
      * @param backlog The connection backlog
      * @return Configured SSLServerSocket
@@ -100,8 +121,33 @@ public class TLSManager {
         // Configure cipher suites
         configureCipherSuites(serverSocket);
 
-        logger.info("SSLServerSocket created on port " + port + " with TLS 1.2/1.3");
+        // Configure ALPN if supported
+        configureALPN(serverSocket);
+
+        logger.info("SSLServerSocket created on port " + port + " with TLS 1.2/1.3" +
+                   (alpnSupported ? " and ALPN support" : ""));
         return serverSocket;
+    }
+
+    private void configureALPN(SSLServerSocket serverSocket) {
+        if (!alpnSupported) {
+            logger.fine("ALPN not supported on this JVM");
+            return;
+        }
+
+        try {
+            Method setApplicationProtocolsMethod = SSLSocket.class.getDeclaredMethod(
+                "setApplicationProtocols", String[].class
+            );
+            setApplicationProtocolsMethod.setAccessible(true);
+
+            String[] protocols = {"h2", "http/1.1"};
+            setApplicationProtocolsMethod.invoke(serverSocket, (Object) protocols);
+
+            logger.info("ALPN configured with protocols: h2, http/1.1");
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Failed to configure ALPN", e);
+        }
     }
 
     /**
@@ -141,5 +187,30 @@ public class TLSManager {
      */
     public SSLContext getSSLContext() {
         return sslContext;
+    }
+
+    /**
+     * Returns true if ALPN is supported on this JVM.
+     */
+    public boolean isALPNSupported() {
+        return alpnSupported;
+    }
+
+    /**
+     * Gets the negotiated ALPN protocol for a given socket.
+     */
+    public String getApplicationProtocol(SSLSocket socket) {
+        if (!alpnSupported) {
+            return null;
+        }
+
+        try {
+            Method getApplicationProtocolMethod = SSLSocket.class.getDeclaredMethod("getApplicationProtocol");
+            getApplicationProtocolMethod.setAccessible(true);
+            return (String) getApplicationProtocolMethod.invoke(socket);
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Failed to get application protocol", e);
+            return null;
+        }
     }
 }
