@@ -39,15 +39,11 @@ public class Servlet extends Thread{
         this.servletNumber = servletNumber;
         this.port = port;
         this.config = config;
-        // Create thread pool with bounded queue to prevent OOM under load
-        BlockingQueue<Runnable> queue = new ArrayBlockingQueue<>(config.getRequestQueueLimit());
-        this.threadPool = new ThreadPoolExecutor(
-            config.getThreadPoolSize(),
-            config.getThreadPoolSize(),
-            0L, TimeUnit.MILLISECONDS,
-            queue,
-            new ThreadPoolExecutor.AbortPolicy()
-        );
+
+        // Create thread pool - use virtual threads on Java 21+ for better scalability
+        VirtualThreadsSupport vtSupport = new VirtualThreadsSupport();
+        this.threadPool = vtSupport.createExecutor();
+
         this.useTLS = config.isTlsEnabled();
 
         // Initialize TLS if enabled

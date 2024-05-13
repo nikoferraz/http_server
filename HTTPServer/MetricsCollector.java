@@ -3,6 +3,7 @@ package HTTPServer;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.DoubleAdder;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.Map;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,34 +16,47 @@ public class MetricsCollector {
     private static MetricsCollector instance;
 
     // Thread-safe bounded list for histogram observations
+    // Uses ReentrantLock instead of synchronized to avoid virtual thread pinning
     private static class BoundedList {
         private final LinkedList<Double> list = new LinkedList<>();
-        private final Object lock = new Object();
+        private final ReentrantLock lock = new ReentrantLock();
 
         public void add(Double value) {
-            synchronized (lock) {
+            lock.lock();
+            try {
                 list.add(value);
                 if (list.size() > MAX_OBSERVATIONS) {
                     list.removeFirst();
                 }
+            } finally {
+                lock.unlock();
             }
         }
 
         public List<Double> getSnapshot() {
-            synchronized (lock) {
+            lock.lock();
+            try {
                 return new ArrayList<>(list);
+            } finally {
+                lock.unlock();
             }
         }
 
         public boolean isEmpty() {
-            synchronized (lock) {
+            lock.lock();
+            try {
                 return list.isEmpty();
+            } finally {
+                lock.unlock();
             }
         }
 
         public int size() {
-            synchronized (lock) {
+            lock.lock();
+            try {
                 return list.size();
+            } finally {
+                lock.unlock();
             }
         }
     }

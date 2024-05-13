@@ -4,6 +4,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -120,6 +121,7 @@ public class RateLimiter {
         private long tokens;
         private long lastRefillTime;
         private long lastAccessTime;
+        private final ReentrantLock lock = new ReentrantLock();
 
         public TokenBucket(int refillRate, int capacity) {
             this.refillRate = refillRate;
@@ -129,16 +131,21 @@ public class RateLimiter {
             this.lastAccessTime = System.currentTimeMillis();
         }
 
-        public synchronized boolean tryConsume() {
-            refill();
-            lastAccessTime = System.currentTimeMillis();
+        public boolean tryConsume() {
+            lock.lock();
+            try {
+                refill();
+                lastAccessTime = System.currentTimeMillis();
 
-            if (tokens > 0) {
-                tokens--;
-                return true;
+                if (tokens > 0) {
+                    tokens--;
+                    return true;
+                }
+
+                return false;
+            } finally {
+                lock.unlock();
             }
-
-            return false;
         }
 
         private void refill() {
@@ -156,9 +163,14 @@ public class RateLimiter {
             }
         }
 
-        public synchronized long getAvailableTokens() {
-            refill();
-            return tokens;
+        public long getAvailableTokens() {
+            lock.lock();
+            try {
+                refill();
+                return tokens;
+            } finally {
+                lock.unlock();
+            }
         }
 
         public long getNextRefillTime() {
