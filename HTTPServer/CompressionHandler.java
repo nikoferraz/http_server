@@ -2,13 +2,16 @@ package HTTPServer;
 
 import java.io.*;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.GZIPOutputStream;
 import java.util.logging.Logger;
 import java.util.logging.Level;
 
 /**
- * Handles response compression using Gzip.
- * Compresses text-based content types and skips binary/pre-compressed files.
+ * Handles response compression using Gzip with intelligent caching.
+ * Compresses text-based content types and caches compressed content for repeated accesses.
+ * Cache respects file modification times and enforces size/entry limits.
  */
 public class CompressionHandler {
 
@@ -16,6 +19,50 @@ public class CompressionHandler {
 
     // Minimum size in bytes to compress (no benefit for very small files)
     private static final int MIN_COMPRESS_SIZE = 256;
+
+    // Compression cache limits
+    private static final int MAX_CACHE_SIZE = 1000;
+    private static final long MAX_CACHEABLE_SIZE = 1_048_576; // 1MB
+
+    // Metrics for cache performance
+    private final AtomicLong cacheHits = new AtomicLong(0);
+    private final AtomicLong cacheMisses = new AtomicLong(0);
+
+    // Cache for compressed content
+    private final ConcurrentHashMap<String, CachedCompression> compressionCache = new ConcurrentHashMap<>();
+
+    /**
+     * Internal class to store cached compression results.
+     */
+    private static class CachedCompression {
+        final byte[] compressedData;
+        final long lastModified;
+        final long cacheTime;
+        final int originalSize;
+        final int compressedSize;
+
+        CachedCompression(byte[] data, long lastModified, int originalSize) {
+            this.compressedData = data;
+            this.lastModified = lastModified;
+            this.cacheTime = System.nanoTime();
+            this.originalSize = originalSize;
+            this.compressedSize = data.length;
+        }
+
+        /**
+         * Checks if cached entry is still valid based on file modification time.
+         */
+        boolean isValid(File file) {
+            return file.lastModified() == lastModified;
+        }
+
+        /**
+         * Returns compression ratio (compressed / original).
+         */
+        double getCompressionRatio() {
+            return (double) compressedSize / originalSize;
+        }
+    }
 
     // Content types that should be compressed
     private static final String[] COMPRESSIBLE_TYPES = {
@@ -102,10 +149,55 @@ public class CompressionHandler {
     }
 
     /**
-     * Compresses file content using Gzip.
+     * Compresses file content using Gzip with caching support.
+     * Returns cached result for repeated accesses to the same file.
+     * Cache is invalidated when file is modified.
+     * Files larger than 1MB are compressed but not cached.
+     *
      * @return byte array of compressed content, or null if compression fails
      */
     public byte[] compressFile(File file) {
+        if (file == null) {
+            return null;
+        }
+
+        // Don't cache very large files (over 1MB)
+        if (file.length() > MAX_CACHEABLE_SIZE) {
+            cacheMisses.incrementAndGet();
+            return compressFileUncached(file);
+        }
+
+        String cacheKey = file.getAbsolutePath();
+        CachedCompression cached = compressionCache.get(cacheKey);
+
+        // Return cached result if valid
+        if (cached != null && cached.isValid(file)) {
+            cacheHits.incrementAndGet();
+            return cached.compressedData;
+        }
+
+        // Cache miss - compress file
+        cacheMisses.incrementAndGet();
+        byte[] compressed = compressFileUncached(file);
+
+        if (compressed != null) {
+            // Add to cache
+            compressionCache.put(cacheKey, new CachedCompression(compressed, file.lastModified(), (int) file.length()));
+
+            // Evict oldest entry if cache is full
+            if (compressionCache.size() > MAX_CACHE_SIZE) {
+                evictLRU();
+            }
+        }
+
+        return compressed;
+    }
+
+    /**
+     * Compresses file without caching.
+     * Used internally and for files that shouldn't be cached.
+     */
+    private byte[] compressFileUncached(File file) {
         try (FileInputStream fis = new FileInputStream(file);
              ByteArrayOutputStream baos = new ByteArrayOutputStream();
              GZIPOutputStream gzos = new GZIPOutputStream(baos)) {
@@ -122,6 +214,26 @@ public class CompressionHandler {
         } catch (IOException e) {
             logger.log(Level.WARNING, "Failed to compress file: " + file.getName(), e);
             return null;
+        }
+    }
+
+    /**
+     * Evicts the least recently used entry from the cache.
+     */
+    private void evictLRU() {
+        String oldestKey = null;
+        long oldestTime = Long.MAX_VALUE;
+
+        // Find entry with oldest cache time
+        for (Map.Entry<String, CachedCompression> entry : compressionCache.entrySet()) {
+            if (entry.getValue().cacheTime < oldestTime) {
+                oldestTime = entry.getValue().cacheTime;
+                oldestKey = entry.getKey();
+            }
+        }
+
+        if (oldestKey != null) {
+            compressionCache.remove(oldestKey);
         }
     }
 
@@ -149,5 +261,49 @@ public class CompressionHandler {
      */
     public GZIPOutputStream createCompressedStream(OutputStream outputStream) throws IOException {
         return new GZIPOutputStream(outputStream);
+    }
+
+    // ============= Cache Management Methods =============
+
+    /**
+     * Returns the number of cache hits (successful cache lookups).
+     */
+    public long getCacheHits() {
+        return cacheHits.get();
+    }
+
+    /**
+     * Returns the number of cache misses (compression performed).
+     */
+    public long getCacheMisses() {
+        return cacheMisses.get();
+    }
+
+    /**
+     * Returns the current cache hit rate (hits / total requests).
+     * Returns 0.0 if no requests have been made.
+     */
+    public double getCacheHitRate() {
+        long hits = cacheHits.get();
+        long misses = cacheMisses.get();
+        long total = hits + misses;
+        return total == 0 ? 0.0 : (double) hits / total;
+    }
+
+    /**
+     * Returns the number of entries currently in the cache.
+     */
+    public long getCacheSize() {
+        return compressionCache.size();
+    }
+
+    /**
+     * Clears all cached compression results and resets metrics.
+     * Useful for testing and cache invalidation.
+     */
+    public void clearCache() {
+        compressionCache.clear();
+        cacheHits.set(0);
+        cacheMisses.set(0);
     }
 }
