@@ -3,6 +3,7 @@ package HTTPServer;
 import java.io.*;
 import java.net.Socket;
 import java.net.URLConnection;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,6 +28,11 @@ class ProcessRequest implements Runnable {
     private static final int HTTP_UNAUTHORIZED = 401;
     private static final int HTTP_METHOD_NOT_ALLOWED = 405;
     private static final int HTTP_PAYLOAD_TOO_LARGE = 413;
+    private static final int BUFFER_SIZE = 8192; // 8KB buffers for file streaming
+    private static final int BUFFER_POOL_SIZE = 1000; // Max 1000 buffers in pool
+
+    // Phase 7: Buffer pooling for GC optimization
+    private static final BufferPool bufferPool = new BufferPool(BUFFER_SIZE, BUFFER_POOL_SIZE);
     private final File webroot;
     private final Socket socket;
     private Logger auditLog;
@@ -401,13 +407,16 @@ class ProcessRequest implements Runnable {
             // Write compressed content
             outputStream.write(content);
         } else {
-            // Stream file in chunks to prevent memory exhaustion
+            // Stream file in chunks using pooled buffer to reduce GC pressure
+            ByteBuffer pooledBuffer = bufferPool.acquire();
             try (FileInputStream fis = new FileInputStream(file)) {
-                byte[] buffer = new byte[8192];
+                byte[] buffer = pooledBuffer.array();
                 int bytesRead;
                 while ((bytesRead = fis.read(buffer)) != -1) {
                     outputStream.write(buffer, 0, bytesRead);
                 }
+            } finally {
+                bufferPool.release(pooledBuffer);
             }
         }
 
