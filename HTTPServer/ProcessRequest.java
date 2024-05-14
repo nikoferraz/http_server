@@ -19,19 +19,18 @@ import java.util.logging.Level;
 
 class ProcessRequest implements Runnable {
 
-    private static final int MAX_REQUEST_SIZE = 8192; // 8KB max request size
-    private static final int MAX_HEADERS_SIZE = 8192; // 8KB max headers size
-    private static final int REQUEST_TIMEOUT_MS = 5000; // 5 second timeout
-    private static final long MAX_FILE_SIZE = 1073741824L; // 1GB max file size
+    private static final int MAX_REQUEST_SIZE = 8192;
+    private static final int MAX_HEADERS_SIZE = 8192;
+    private static final int REQUEST_TIMEOUT_MS = 5000;
+    private static final long MAX_FILE_SIZE = 1073741824L;
     private static final int HTTP_OK = 200;
     private static final int HTTP_NOT_FOUND = 404;
     private static final int HTTP_UNAUTHORIZED = 401;
     private static final int HTTP_METHOD_NOT_ALLOWED = 405;
     private static final int HTTP_PAYLOAD_TOO_LARGE = 413;
-    private static final int BUFFER_SIZE = 8192; // 8KB buffers for file streaming
-    private static final int BUFFER_POOL_SIZE = 1000; // Max 1000 buffers in pool
+    private static final int BUFFER_SIZE = 8192;
+    private static final int BUFFER_POOL_SIZE = 1000;
 
-    // Phase 7: Buffer pooling for GC optimization
     private static final BufferPool bufferPool = new BufferPool(BUFFER_SIZE, BUFFER_POOL_SIZE);
     private final File webroot;
     private final Socket socket;
@@ -40,9 +39,8 @@ class ProcessRequest implements Runnable {
     private ServerConfig config;
     private CompressionHandler compressionHandler;
     private CacheManager cacheManager;
-    private boolean useHTTP11 = true; // Default to HTTP/1.1
+    private boolean useHTTP11 = true;
 
-    // Phase 5: Advanced features
     private MetricsCollector metrics;
     private HealthCheckHandler healthCheckHandler;
     private RequestBodyParser bodyParser;
@@ -50,11 +48,9 @@ class ProcessRequest implements Runnable {
     private StructuredLogger structuredLogger;
     private String requestId;
 
-    // Phase 6: Enterprise features
     private AuthenticationManager authManager;
     private VirtualHostManager vhostManager;
     private RoutingEngine routingEngine;
-
 
     public ProcessRequest(File webroot, Socket socket, Logger auditLog) {
         this(webroot, socket, auditLog, new ServerConfig());
@@ -68,14 +64,12 @@ class ProcessRequest implements Runnable {
         this.compressionHandler = new CompressionHandler();
         this.cacheManager = new CacheManager();
 
-        // Phase 5: Initialize advanced features
         this.metrics = MetricsCollector.getInstance();
         this.healthCheckHandler = new HealthCheckHandler(webroot);
         this.bodyParser = new RequestBodyParser(config.getRequestBodyMaxSizeBytes());
         this.structuredLogger = new StructuredLogger(auditLog, config.isJsonLogging(), config.getLoggingLevel());
         this.requestId = structuredLogger.generateRequestId();
 
-        // Phase 6: Initialize enterprise features
         this.authManager = new AuthenticationManager(config);
         this.vhostManager = new VirtualHostManager(config, webroot);
         this.routingEngine = new RoutingEngine(config);
@@ -87,85 +81,127 @@ class ProcessRequest implements Runnable {
 
     @Override
     public void run() {
-        long startTime = System.currentTimeMillis();
-        String method = null;
-        String path = null;
-        int statusCode = 500;
-        long responseSize = 0;
+        boolean keepAlive = true;
+        int requestCount = 0;
+        long totalStartTime = System.currentTimeMillis();
 
         try {
-            // Phase 5: Increment active connections gauge
             if (config.isMetricsEnabled()) {
                 metrics.incrementGauge("http_active_connections");
             }
 
-            socket.setSoTimeout(REQUEST_TIMEOUT_MS);
-            BufferedReader inputStream = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            int socketTimeout = config.isKeepAliveEnabled() ?
+                config.getKeepAliveTimeoutMs() : REQUEST_TIMEOUT_MS;
+            socket.setSoTimeout(socketTimeout);
 
-            // Read the request line
-            String requestLine = inputStream.readLine();
-            if (requestLine == null || requestLine.isEmpty() || requestLine.length() >= MAX_REQUEST_SIZE) {
-                throw new IOException("Invalid HTTP request format");
-            }
+            BufferedReader inputStream = new BufferedReader(
+                new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8)
+            );
 
-            String[] parts = requestLine.split("\\s+");
-            if (parts.length < 2) {
-                throw new IOException("Invalid HTTP request format");
-            }
+            while (keepAlive && requestCount < config.getKeepAliveMaxRequests()) {
+                long startTime = System.currentTimeMillis();
+                String method = null;
+                String path = null;
+                int statusCode = 500;
+                long responseSize = 0;
 
-            method = parts[0];
-            path = parts[1];
-
-            // Read HTTP headers with size validation
-            Map<String, String> headers = new HashMap<>();
-            String headerLine;
-            int totalHeadersSize = requestLine.length();
-            while ((headerLine = inputStream.readLine()) != null && !headerLine.isEmpty()) {
-                // Check if adding this header would exceed the limit
-                totalHeadersSize += headerLine.length() + 2; // +2 for \r\n
-                if (totalHeadersSize > MAX_HEADERS_SIZE) {
-                    throw new IOException("Request headers size exceeds maximum allowed size");
-                }
-
-                int colonIndex = headerLine.indexOf(':');
-                if (colonIndex > 0) {
-                    String name = headerLine.substring(0, colonIndex).trim();
-                    String value = headerLine.substring(colonIndex + 1).trim();
-                    headers.put(name.toLowerCase(), value);
-                }
-            }
-
-            // Phase 5: Rate limiting check
-            if (config.isRateLimitEnabled() && rateLimiter != null) {
-                String clientIp = socket.getRemoteSocketAddress().toString();
-                RateLimiter.RateLimitResult rateLimitResult = rateLimiter.tryAcquire(clientIp);
-
-                if (!rateLimitResult.isAllowed()) {
-                    statusCode = 429;
-                    try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
-                         Writer writer = new OutputStreamWriter(outputStream)) {
-                        sendRateLimitExceeded(writer, parts.length > 2 ? parts[2] : "HTTP/1.0",
-                                            rateLimitResult, headers);
+                try {
+                    String requestLine = inputStream.readLine();
+                    if (requestLine == null || requestLine.isEmpty()) {
+                        break;
                     }
-                    return;
+
+                    if (requestLine.length() >= MAX_REQUEST_SIZE) {
+                        throw new IOException("Request line too long");
+                    }
+
+                    String[] parts = requestLine.split("\\s+");
+                    if (parts.length < 2) {
+                        throw new IOException("Invalid HTTP request format");
+                    }
+
+                    method = parts[0];
+                    path = parts[1];
+
+                    Map<String, String> headers = new HashMap<>();
+                    String headerLine;
+                    int totalHeadersSize = requestLine.length();
+                    while ((headerLine = inputStream.readLine()) != null && !headerLine.isEmpty()) {
+                        totalHeadersSize += headerLine.length() + 2;
+                        if (totalHeadersSize > MAX_HEADERS_SIZE) {
+                            throw new IOException("Request headers size exceeds maximum allowed size");
+                        }
+
+                        int colonIndex = headerLine.indexOf(':');
+                        if (colonIndex > 0) {
+                            String name = headerLine.substring(0, colonIndex).trim();
+                            String value = headerLine.substring(colonIndex + 1).trim();
+                            headers.put(name.toLowerCase(), value);
+                        }
+                    }
+
+                    String version = (parts.length > 2) ? parts[2] : "HTTP/1.0";
+                    String connectionHeader = headers.get("connection");
+                    keepAlive = config.isKeepAliveEnabled() && shouldKeepAlive(connectionHeader, version);
+
+                    if (config.isRateLimitEnabled() && rateLimiter != null) {
+                        String clientIp = socket.getRemoteSocketAddress().toString();
+                        RateLimiter.RateLimitResult rateLimitResult = rateLimiter.tryAcquire(clientIp);
+
+                        if (!rateLimitResult.isAllowed()) {
+                            statusCode = 429;
+                            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                                 Writer writer = new OutputStreamWriter(outputStream)) {
+                                sendRateLimitExceeded(writer, version, rateLimitResult, headers, keepAlive);
+                            }
+                            if (!keepAlive) {
+                                break;
+                            }
+                            requestCount++;
+                            continue;
+                        }
+
+                        headers.put("x-ratelimit-limit", String.valueOf(rateLimitResult.getLimit()));
+                        headers.put("x-ratelimit-remaining", String.valueOf(rateLimitResult.getRemaining()));
+                        headers.put("x-ratelimit-reset", String.valueOf(rateLimitResult.getResetTime()));
+                    }
+
+                    if (requestCount >= config.getKeepAliveMaxRequests() - 1) {
+                        keepAlive = false;
+                    }
+
+                    routeRequest(parts, headers, inputStream, keepAlive);
+                    statusCode = 200;
+
+                } catch (java.net.SocketTimeoutException e) {
+                    auditLog.fine("Keep-alive timeout for " + socket.getRemoteSocketAddress());
+                    break;
+                } catch (UnsupportedEncodingException e) {
+                    statusCode = 400;
+                    errorLog.log(Level.WARNING, "Unsupported encoding in request", e);
+                    structuredLogger.logError(requestId, "Unsupported encoding", e);
+                    keepAlive = false;
+                } catch (IOException e) {
+                    statusCode = 500;
+                    errorLog.log(Level.WARNING, "IO error processing request", e);
+                    structuredLogger.logError(requestId, "IO error processing request", e);
+                    keepAlive = false;
+                } finally {
+                    if (config.isMetricsEnabled()) {
+                        long duration = System.currentTimeMillis() - startTime;
+                        metrics.recordRequest(method != null ? method : "UNKNOWN", statusCode, duration, responseSize);
+
+                        String remoteIp = socket.getRemoteSocketAddress().toString();
+                        structuredLogger.logRequest(requestId, remoteIp, method != null ? method : "UNKNOWN",
+                                                  path != null ? path : "/", statusCode, duration, responseSize);
+                    }
                 }
 
-                // Add rate limit headers (will be included in response)
-                headers.put("x-ratelimit-limit", String.valueOf(rateLimitResult.getLimit()));
-                headers.put("x-ratelimit-remaining", String.valueOf(rateLimitResult.getRemaining()));
-                headers.put("x-ratelimit-reset", String.valueOf(rateLimitResult.getResetTime()));
+                requestCount++;
             }
 
-            routeRequest(parts, headers, inputStream);
-            statusCode = 200; // Assume success if no exception
-        } catch (UnsupportedEncodingException e) {
-            statusCode = 400;
-            errorLog.log(Level.WARNING, "Unsupported encoding in request", e);
-            structuredLogger.logError(requestId, "Unsupported encoding", e);
-        } catch (IOException e) {
-            statusCode = 500;
-            errorLog.log(Level.WARNING, "IO error processing request", e);
-            structuredLogger.logError(requestId, "IO error processing request", e);
+        } catch (Exception e) {
+            errorLog.log(Level.SEVERE, "Error in request handler", e);
         } finally {
             try {
                 socket.close();
@@ -173,24 +209,35 @@ class ProcessRequest implements Runnable {
                 errorLog.log(Level.WARNING, "Error closing socket", e);
             }
 
-            // Phase 5: Decrement active connections gauge
             if (config.isMetricsEnabled()) {
                 metrics.decrementGauge("http_active_connections");
-
-                // Record request metrics
-                long duration = System.currentTimeMillis() - startTime;
-                metrics.recordRequest(method != null ? method : "UNKNOWN", statusCode, duration, responseSize);
-
-                // Log structured request
-                String remoteIp = socket.getRemoteSocketAddress().toString();
-                structuredLogger.logRequest(requestId, remoteIp, method != null ? method : "UNKNOWN",
-                                          path != null ? path : "/", statusCode, duration, responseSize);
+                long totalDuration = System.currentTimeMillis() - totalStartTime;
+                auditLog.info("Connection closed: " + requestCount + " requests, " + totalDuration + "ms");
             }
         }
     }
 
+    private boolean shouldKeepAlive(String connectionHeader, String httpVersion) {
+        if (connectionHeader == null) {
+            return httpVersion != null && httpVersion.startsWith("HTTP/1.1");
+        }
+
+        String normalized = connectionHeader.toLowerCase().trim();
+        if (normalized.contains("close")) {
+            return false;
+        }
+        if (normalized.contains("keep-alive")) {
+            return true;
+        }
+
+        return httpVersion != null && httpVersion.startsWith("HTTP/1.1");
+    }
+
     public void routeRequest(String[] requestHeader, Map<String, String> headers, BufferedReader inputStream) throws IOException {
-        // Array bounds checking
+        routeRequest(requestHeader, headers, inputStream, true);
+    }
+
+    public void routeRequest(String[] requestHeader, Map<String, String> headers, BufferedReader inputStream, boolean keepAlive) throws IOException {
         if (requestHeader.length < 2) {
             throw new IOException("Invalid HTTP request: missing method or path");
         }
@@ -199,19 +246,16 @@ class ProcessRequest implements Runnable {
         String path = requestHeader[1];
         String version = (requestHeader.length > 2) ? requestHeader[2] : "HTTP/1.0";
 
-        // Determine HTTP version
         useHTTP11 = version.startsWith("HTTP/1.1");
 
-        // Validate Host header for HTTP/1.1 (required by spec)
         if (useHTTP11 && !headers.containsKey("host")) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
-                sendBadRequest(writer, "HTTP/1.1 requires Host header");
+                sendBadRequest(writer, "HTTP/1.1 requires Host header", keepAlive);
             }
             return;
         }
 
-        // Phase 6: Process routing rules (redirects and rewrites)
         if (routingEngine.isEnabled()) {
             RoutingEngine.RoutingResult routingResult = routingEngine.processRequest(path);
             if (routingResult.isRedirect()) {
@@ -226,7 +270,6 @@ class ProcessRequest implements Runnable {
             }
         }
 
-        // Phase 5: Route health check endpoints
         if (config.isHealthChecksEnabled() && path.startsWith("/health/")) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
@@ -235,57 +278,50 @@ class ProcessRequest implements Runnable {
             return;
         }
 
-        // Phase 5: Route metrics endpoint
         if (config.isMetricsEnabled() && path.equals("/metrics")) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
-                handleMetricsEndpoint(writer, version);
+                handleMetricsEndpoint(writer, version, keepAlive);
             }
             return;
         }
 
-        // Phase 5: Route API endpoints (POST/PUT/DELETE)
         if (path.startsWith("/api/")) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
-                handleApiEndpoint(method, path, version, headers, inputStream, writer);
+                handleApiEndpoint(method, path, version, headers, inputStream, writer, keepAlive);
             }
             return;
         }
 
-        // Handle root path requests - serve index.html or return 404
         if (path == null || path.isEmpty() || path.equals("/")) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
-                resourceNotFound(writer, version, headers);
+                resourceNotFound(writer, version, headers, keepAlive);
             }
             return;
         }
 
         String fileName = path;
-
         fileName = fileName.substring(1);
 
-        // Phase 6: Resolve webroot using virtual host manager
         File resolvedWebroot = vhostManager.resolveWebroot(headers);
 
-        // Path traversal validation - normalize and validate BEFORE authentication
         Path requestedPath = validateAndNormalizePath(fileName, resolvedWebroot);
         if (requestedPath == null) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
-                resourceNotFound(writer, version, headers);
+                resourceNotFound(writer, version, headers, keepAlive);
             }
             return;
         }
 
-        // Phase 6: Check authentication using AuthenticationManager
         if (authManager.requiresAuthentication(path)) {
             AuthenticationManager.AuthResult authResult = authManager.authenticate(headers);
             if (!authResult.isAuthenticated()) {
                 try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                      Writer writer = new OutputStreamWriter(outputStream)) {
-                    sendUnauthorizedResponse(writer, version, headers);
+                    sendUnauthorizedResponse(writer, version, headers, keepAlive);
                     if (config.isMetricsEnabled()) {
                         metrics.incrementCounter("auth_failures", "path=" + path);
                     }
@@ -293,7 +329,6 @@ class ProcessRequest implements Runnable {
                 return;
             }
 
-            // Log successful authentication
             structuredLogger.logInfo(requestId, "Authentication successful: user=" + authResult.getUsername() +
                                                ", method=" + authResult.getMethod());
             if (config.isMetricsEnabled()) {
@@ -302,7 +337,6 @@ class ProcessRequest implements Runnable {
         }
 
         String mimeType = URLConnection.getFileNameMap().getContentTypeFor(fileName);
-        // Default MIME type if null
         if (mimeType == null) {
             mimeType = "application/octet-stream";
         }
@@ -312,20 +346,18 @@ class ProcessRequest implements Runnable {
         System.out.println("The file mimetype is  " + mimeType+ "\r\n");
 
         try {
-            // Check file size before processing
             if (file.length() > MAX_FILE_SIZE) {
                 try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                      Writer writer = new OutputStreamWriter(outputStream)) {
-                    sendPayloadTooLarge(writer, version, headers);
+                    sendPayloadTooLarge(writer, version, headers, keepAlive);
                 }
                 return;
             }
 
-            // Check if file is readable - validateAndNormalizePath already checked path safety
             if (!file.canRead()) {
                 try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                      Writer writer = new OutputStreamWriter(outputStream)) {
-                    resourceNotFound(writer, version, headers);
+                    resourceNotFound(writer, version, headers, keepAlive);
                 }
                 return;
             }
@@ -334,13 +366,13 @@ class ProcessRequest implements Runnable {
                  Writer writer = new OutputStreamWriter(outputStream)) {
                 switch (method) {
                     case "GET":
-                        HTTPGet(outputStream, writer, file, mimeType, version, headers);
+                        HTTPGet(outputStream, writer, file, mimeType, version, headers, keepAlive);
                         break;
                     case "HEAD":
-                        HTTPHead(writer, file, mimeType, version, headers);
+                        HTTPHead(writer, file, mimeType, version, headers, keepAlive);
                         break;
                     default:
-                        invalidVerb(writer, version, headers);
+                        invalidVerb(writer, version, headers, keepAlive);
                         break;
                 }
             }
@@ -348,37 +380,27 @@ class ProcessRequest implements Runnable {
             errorLog.log(Level.WARNING, "Unsupported encoding in route", e);
         } catch (IOException e) {
             errorLog.log(Level.WARNING, "IO error in route", e);
-        } finally {
-            try {
-                socket.close();
-            } catch (IOException e) {
-                errorLog.log(Level.WARNING, "Error closing socket in route", e);
-            }
         }
     }
 
-    private void HTTPGet(OutputStream outputStream, Writer writer, File file, String mimeType, String version, Map<String, String> headers)
+    private void HTTPGet(OutputStream outputStream, Writer writer, File file, String mimeType, String version, Map<String, String> headers, boolean keepAlive)
             throws IOException {
         long fileLength = file.length();
         String code = "200";
 
-        // Generate ETag and Last-Modified headers
         String etag = null;
         String lastModified = null;
         if (config.isCacheEnabled()) {
             etag = cacheManager.generateETag(file);
             lastModified = cacheManager.getLastModified(file);
 
-            // Check if resource was modified (conditional request)
             if (!cacheManager.shouldServeResource(headers, file, etag)) {
-                // Send 304 Not Modified
-                sendNotModified(writer, version, etag, lastModified, headers);
+                sendNotModified(writer, version, etag, lastModified, headers, keepAlive);
                 logRequest("GET", file.getName(), version, "304", 0);
                 return;
             }
         }
 
-        // Check if compression should be applied
         boolean useCompression = config.isCompressionEnabled() &&
                                  compressionHandler.shouldCompress(headers, mimeType, fileLength, file.getName());
 
@@ -386,28 +408,22 @@ class ProcessRequest implements Runnable {
         int contentLength = (int) fileLength;
 
         if (useCompression) {
-            // Compress the file
             content = compressionHandler.compressFile(file);
             if (content != null) {
                 contentLength = content.length;
             } else {
-                // Compression failed, serve uncompressed
                 useCompression = false;
             }
         }
 
-        // Send response headers
         if (version.startsWith("HTTP/")) {
             String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
-            sendHeader(writer, httpVersion + " 200 OK", mimeType, contentLength, etag, lastModified, useCompression, headers);
+            sendHeader(writer, httpVersion + " 200 OK", mimeType, contentLength, etag, lastModified, useCompression, headers, keepAlive);
         }
 
-        // Send response body
         if (useCompression && content != null) {
-            // Write compressed content
             outputStream.write(content);
         } else {
-            // Stream file in chunks using pooled buffer to reduce GC pressure
             ByteBuffer pooledBuffer = bufferPool.acquire();
             try (FileInputStream fis = new FileInputStream(file)) {
                 byte[] buffer = pooledBuffer.array();
@@ -424,33 +440,28 @@ class ProcessRequest implements Runnable {
         outputStream.flush();
     }
 
-    private void HTTPHead(Writer writer, File file, String mimeType, String version, Map<String, String> headers) throws IOException {
+    private void HTTPHead(Writer writer, File file, String mimeType, String version, Map<String, String> headers, boolean keepAlive) throws IOException {
         long fileLength = file.length();
         String code = "200";
 
-        // Generate ETag and Last-Modified headers (same as GET)
         String etag = null;
         String lastModified = null;
         if (config.isCacheEnabled()) {
             etag = cacheManager.generateETag(file);
             lastModified = cacheManager.getLastModified(file);
 
-            // Check if resource was modified (conditional request)
             if (!cacheManager.shouldServeResource(headers, file, etag)) {
-                // Send 304 Not Modified
-                sendNotModified(writer, version, etag, lastModified, headers);
+                sendNotModified(writer, version, etag, lastModified, headers, keepAlive);
                 logRequest("HEAD", file.getName(), version, "304", 0);
                 return;
             }
         }
 
-        // Calculate content length (compressed or not)
         boolean wouldCompress = config.isCompressionEnabled() &&
                                 compressionHandler.shouldCompress(headers, mimeType, fileLength, file.getName());
         int contentLength = (int) fileLength;
 
         if (wouldCompress) {
-            // For HEAD, we need to calculate what the compressed size would be
             byte[] compressed = compressionHandler.compressFile(file);
             if (compressed != null) {
                 contentLength = compressed.length;
@@ -461,13 +472,13 @@ class ProcessRequest implements Runnable {
 
         if (version.startsWith("HTTP/")) {
             String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
-            sendHeader(writer, httpVersion + " 200 OK", mimeType, contentLength, etag, lastModified, wouldCompress, headers);
+            sendHeader(writer, httpVersion + " 200 OK", mimeType, contentLength, etag, lastModified, wouldCompress, headers, keepAlive);
         }
 
         logRequest("HEAD", file.getName(), version, code, contentLength);
     }
 
-    public void invalidVerb(Writer writer, String version, Map<String, String> headers) throws IOException {
+    public void invalidVerb(Writer writer, String version, Map<String, String> headers, boolean keepAlive) throws IOException {
         String response = "<HTML>\r\n<head><title>Method Not Allowed</title></head>\r\n"
                 + "<body><h1>405 Method Not Allowed</h1>\r\n"
                 + "<p>The HTTP method used is not supported by this server.</p>\r\n"
@@ -479,14 +490,14 @@ class ProcessRequest implements Runnable {
             writer.write("Allow: GET, HEAD\r\n");
             writer.write("Content-type: text/html; charset=utf-8\r\n");
             writer.write("Content-length: " + response.length() + "\r\n");
-            addCommonHeaders(writer, headers);
+            addCommonHeaders(writer, headers, keepAlive);
             writer.write("\r\n");
         }
         writer.write(response);
         writer.flush();
     }
 
-    public void resourceNotFound(Writer writer, String version, Map<String, String> headers) throws IOException {
+    public void resourceNotFound(Writer writer, String version, Map<String, String> headers, boolean keepAlive) throws IOException {
         String response = new StringBuilder("<HTML>\r\n").append("<head><title>Resource Not Found</title></head>\r\n")
                 .append("<body>").append("<h1>404 Error: File not found.</h1>\r\n").append("</body></html>\r\n")
                 .toString();
@@ -495,7 +506,7 @@ class ProcessRequest implements Runnable {
             writer.write(httpVersion + " 404 Not Found\r\n");
             writer.write("Content-type: text/html; charset=utf-8\r\n");
             writer.write("Content-length: " + response.length() + "\r\n");
-            addCommonHeaders(writer, headers);
+            addCommonHeaders(writer, headers, keepAlive);
             writer.write("\r\n");
         }
         writer.write(response);
@@ -503,18 +514,17 @@ class ProcessRequest implements Runnable {
     }
 
     private void sendHeader(Writer writer, String responseCode, String mimeType, int length) throws IOException {
-        sendHeader(writer, responseCode, mimeType, length, null, null, false, null);
+        sendHeader(writer, responseCode, mimeType, length, null, null, false, null, true);
     }
 
     private void sendHeader(Writer writer, String responseCode, String mimeType, int length,
-                           String etag, String lastModified, boolean compressed, Map<String, String> headers) throws IOException {
+                           String etag, String lastModified, boolean compressed, Map<String, String> headers, boolean keepAlive) throws IOException {
         writer.write(responseCode + "\r\n");
         writer.write("Date: " + cacheManager.getHttpDate() + "\r\n");
         writer.write("Server: HTTPServer/2.0\r\n");
         writer.write("Content-length: " + length + "\r\n");
         writer.write("Content-type: " + mimeType + "\r\n");
 
-        // Add caching headers
         if (config.isCacheEnabled() && etag != null) {
             writer.write("ETag: " + etag + "\r\n");
         }
@@ -525,27 +535,28 @@ class ProcessRequest implements Runnable {
             writer.write("Cache-Control: " + cacheManager.getCacheControl("") + "\r\n");
         }
 
-        // Add compression header
         if (compressed) {
             writer.write("Content-Encoding: gzip\r\n");
             writer.write("Vary: Accept-Encoding\r\n");
         }
 
-        // Add common headers (Connection, HSTS, etc.)
-        addCommonHeaders(writer, headers);
+        addCommonHeaders(writer, headers, keepAlive);
 
         writer.write("\r\n");
         writer.flush();
     }
 
-    private void addCommonHeaders(Writer writer, Map<String, String> headers) throws IOException {
-        // HTTP/1.1 Connection header
+    private void addCommonHeaders(Writer writer, Map<String, String> headers, boolean keepAlive) throws IOException {
         if (useHTTP11) {
-            // For HTTP/1.1, default is keep-alive, but we're closing after each request for now
-            writer.write("Connection: close\r\n");
+            if (keepAlive) {
+                writer.write("Connection: keep-alive\r\n");
+                writer.write("Keep-Alive: timeout=" + (config.getKeepAliveTimeoutMs() / 1000) +
+                            ", max=" + config.getKeepAliveMaxRequests() + "\r\n");
+            } else {
+                writer.write("Connection: close\r\n");
+            }
         }
 
-        // Add HSTS header if TLS is enabled
         if (config.isTlsEnabled() && config.isHstsEnabled()) {
             String hstsHeader = config.getHstsHeader();
             if (hstsHeader != null) {
@@ -554,7 +565,7 @@ class ProcessRequest implements Runnable {
         }
     }
 
-    private void sendNotModified(Writer writer, String version, String etag, String lastModified, Map<String, String> headers) throws IOException {
+    private void sendNotModified(Writer writer, String version, String etag, String lastModified, Map<String, String> headers, boolean keepAlive) throws IOException {
         String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
         writer.write(httpVersion + " 304 Not Modified\r\n");
         writer.write("Date: " + cacheManager.getHttpDate() + "\r\n");
@@ -568,12 +579,12 @@ class ProcessRequest implements Runnable {
 
         writer.write("Cache-Control: " + cacheManager.getCacheControl("") + "\r\n");
 
-        addCommonHeaders(writer, headers);
+        addCommonHeaders(writer, headers, keepAlive);
         writer.write("\r\n");
         writer.flush();
     }
 
-    private void sendBadRequest(Writer writer, String message) throws IOException {
+    private void sendBadRequest(Writer writer, String message, boolean keepAlive) throws IOException {
         String response = "<HTML>\r\n<head><title>Bad Request</title></head>\r\n"
                 + "<body><h1>400 Bad Request</h1>\r\n"
                 + "<p>" + message + "</p>\r\n"
@@ -589,7 +600,7 @@ class ProcessRequest implements Runnable {
         writer.flush();
     }
 
-    private void sendPayloadTooLarge(Writer writer, String version, Map<String, String> headers) throws IOException {
+    private void sendPayloadTooLarge(Writer writer, String version, Map<String, String> headers, boolean keepAlive) throws IOException {
         String response = "<HTML>\r\n<head><title>Payload Too Large</title></head>\r\n"
                 + "<body><h1>413 Payload Too Large</h1>\r\n"
                 + "<p>File size exceeds maximum allowed size</p>\r\n"
@@ -599,13 +610,13 @@ class ProcessRequest implements Runnable {
         writer.write(httpVersion + " 413 Payload Too Large\r\n");
         writer.write("Content-type: text/html; charset=utf-8\r\n");
         writer.write("Content-length: " + response.length() + "\r\n");
-        addCommonHeaders(writer, headers);
+        addCommonHeaders(writer, headers, keepAlive);
         writer.write("\r\n");
         writer.write(response);
         writer.flush();
     }
+
     public void logRequest(String verb, String fileName, String version, String code, int bytes){
-        //127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326
         ZonedDateTime time = ZonedDateTime.now(ZoneId.systemDefault());
         DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("dd/MMM/yyyy HH:mm:ss Z");
         String formattedTime = time.format(dateFormatter);
@@ -617,23 +628,19 @@ class ProcessRequest implements Runnable {
 
     private Path validateAndNormalizePath(String fileName, File webrootToUse) {
         try {
-            // Reject paths containing directory traversal attempts
             if (fileName.contains("..")) {
                 System.err.println("Path traversal attempt detected: " + fileName);
                 return null;
             }
 
-            // Normalize the path
             Path requestedPath = Paths.get(webrootToUse.getCanonicalPath(), fileName).normalize();
             Path webrootPath = Paths.get(webrootToUse.getCanonicalPath()).normalize();
 
-            // Verify the resolved path is within the webroot
             if (!requestedPath.startsWith(webrootPath)) {
                 System.err.println("Path outside webroot: " + requestedPath);
                 return null;
             }
 
-            // Reject absolute paths
             if (Paths.get(fileName).isAbsolute()) {
                 System.err.println("Absolute path rejected: " + fileName);
                 return null;
@@ -646,8 +653,7 @@ class ProcessRequest implements Runnable {
         }
     }
 
-
-    private void sendUnauthorizedResponse(Writer writer, String version, Map<String, String> headers) throws IOException {
+    private void sendUnauthorizedResponse(Writer writer, String version, Map<String, String> headers, boolean keepAlive) throws IOException {
         String authMethods = "Basic Authentication";
         if (authManager.isApiKeyEnabled()) {
             authMethods += ", API Key (X-API-Key header)";
@@ -664,29 +670,33 @@ class ProcessRequest implements Runnable {
 
         writer.write("Content-type: text/html; charset=utf-8\r\n");
         writer.write("Content-length: " + response.length() + "\r\n");
-        addCommonHeaders(writer, headers);
+        addCommonHeaders(writer, headers, keepAlive);
         writer.write("\r\n");
         writer.write(response);
         writer.flush();
     }
 
-    // Phase 5: Metrics endpoint handler
-    private void handleMetricsEndpoint(Writer writer, String version) throws IOException {
+    private void handleMetricsEndpoint(Writer writer, String version, boolean keepAlive) throws IOException {
         String metricsOutput = metrics.exportPrometheusMetrics();
 
         String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
         writer.write(httpVersion + " 200 OK\r\n");
         writer.write("Content-Type: text/plain; version=0.0.4\r\n");
         writer.write("Content-Length: " + metricsOutput.length() + "\r\n");
-        writer.write("Connection: close\r\n");
+        if (keepAlive) {
+            writer.write("Connection: keep-alive\r\n");
+            writer.write("Keep-Alive: timeout=" + (config.getKeepAliveTimeoutMs() / 1000) +
+                        ", max=" + config.getKeepAliveMaxRequests() + "\r\n");
+        } else {
+            writer.write("Connection: close\r\n");
+        }
         writer.write("\r\n");
         writer.write(metricsOutput);
         writer.flush();
     }
 
-    // Phase 5: Rate limit exceeded response
     private void sendRateLimitExceeded(Writer writer, String version, RateLimiter.RateLimitResult result,
-                                      Map<String, String> headers) throws IOException {
+                                      Map<String, String> headers, boolean keepAlive) throws IOException {
         String response = String.format(
             "{\"error\":\"Too many requests\",\"retryAfter\":%d}",
             result.getRetryAfter()
@@ -700,47 +710,49 @@ class ProcessRequest implements Runnable {
         writer.write("X-RateLimit-Remaining: " + result.getRemaining() + "\r\n");
         writer.write("X-RateLimit-Reset: " + result.getResetTime() + "\r\n");
         writer.write("Retry-After: " + result.getRetryAfter() + "\r\n");
-        writer.write("Connection: close\r\n");
+        if (keepAlive) {
+            writer.write("Connection: keep-alive\r\n");
+            writer.write("Keep-Alive: timeout=" + (config.getKeepAliveTimeoutMs() / 1000) +
+                        ", max=" + config.getKeepAliveMaxRequests() + "\r\n");
+        } else {
+            writer.write("Connection: close\r\n");
+        }
         writer.write("\r\n");
         writer.write(response);
         writer.flush();
     }
 
-    // Phase 5: API endpoint handler (POST/PUT/DELETE)
     private void handleApiEndpoint(String method, String path, String version, Map<String, String> headers,
-                                   BufferedReader inputStream, Writer writer) throws IOException {
-        // Phase 6: Check authentication using AuthenticationManager
+                                   BufferedReader inputStream, Writer writer, boolean keepAlive) throws IOException {
         AuthenticationManager.AuthResult authResult = authManager.authenticate(headers);
         if (!authResult.isAuthenticated()) {
-            sendUnauthorizedResponse(writer, version, headers);
+            sendUnauthorizedResponse(writer, version, headers, keepAlive);
             return;
         }
 
-        String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
-
         switch (path) {
             case "/api/echo":
-                handleEchoEndpoint(method, version, headers, inputStream, writer);
+                handleEchoEndpoint(method, version, headers, inputStream, writer, keepAlive);
                 break;
 
             case "/api/upload":
-                handleUploadEndpoint(method, version, headers, inputStream, writer);
+                handleUploadEndpoint(method, version, headers, inputStream, writer, keepAlive);
                 break;
 
             default:
                 if (path.startsWith("/api/data")) {
-                    handleDataEndpoint(method, path, version, headers, inputStream, writer);
+                    handleDataEndpoint(method, path, version, headers, inputStream, writer, keepAlive);
                 } else {
-                    sendApiNotFound(writer, version);
+                    sendApiNotFound(writer, version, keepAlive);
                 }
                 break;
         }
     }
 
     private void handleEchoEndpoint(String method, String version, Map<String, String> headers,
-                                   BufferedReader inputStream, Writer writer) throws IOException {
+                                   BufferedReader inputStream, Writer writer, boolean keepAlive) throws IOException {
         if (!method.equals("POST")) {
-            sendMethodNotAllowed(writer, version, "POST");
+            sendMethodNotAllowed(writer, version, "POST", keepAlive);
             return;
         }
 
@@ -757,19 +769,25 @@ class ProcessRequest implements Runnable {
             writer.write(httpVersion + " 200 OK\r\n");
             writer.write("Content-Type: application/json\r\n");
             writer.write("Content-Length: " + responseBody.length() + "\r\n");
-            writer.write("Connection: close\r\n");
+            if (keepAlive) {
+                writer.write("Connection: keep-alive\r\n");
+                writer.write("Keep-Alive: timeout=" + (config.getKeepAliveTimeoutMs() / 1000) +
+                            ", max=" + config.getKeepAliveMaxRequests() + "\r\n");
+            } else {
+                writer.write("Connection: close\r\n");
+            }
             writer.write("\r\n");
             writer.write(responseBody);
             writer.flush();
         } catch (RequestBodyParser.PayloadTooLargeException e) {
-            sendPayloadTooLarge(writer, version, headers);
+            sendPayloadTooLarge(writer, version, headers, keepAlive);
         }
     }
 
     private void handleUploadEndpoint(String method, String version, Map<String, String> headers,
-                                     BufferedReader inputStream, Writer writer) throws IOException {
+                                     BufferedReader inputStream, Writer writer, boolean keepAlive) throws IOException {
         if (!method.equals("POST")) {
-            sendMethodNotAllowed(writer, version, "POST");
+            sendMethodNotAllowed(writer, version, "POST", keepAlive);
             return;
         }
 
@@ -786,17 +804,23 @@ class ProcessRequest implements Runnable {
             writer.write(httpVersion + " 200 OK\r\n");
             writer.write("Content-Type: application/json\r\n");
             writer.write("Content-Length: " + responseBody.length() + "\r\n");
-            writer.write("Connection: close\r\n");
+            if (keepAlive) {
+                writer.write("Connection: keep-alive\r\n");
+                writer.write("Keep-Alive: timeout=" + (config.getKeepAliveTimeoutMs() / 1000) +
+                            ", max=" + config.getKeepAliveMaxRequests() + "\r\n");
+            } else {
+                writer.write("Connection: close\r\n");
+            }
             writer.write("\r\n");
             writer.write(responseBody);
             writer.flush();
         } catch (RequestBodyParser.PayloadTooLargeException e) {
-            sendPayloadTooLarge(writer, version, headers);
+            sendPayloadTooLarge(writer, version, headers, keepAlive);
         }
     }
 
     private void handleDataEndpoint(String method, String path, String version, Map<String, String> headers,
-                                   BufferedReader inputStream, Writer writer) throws IOException {
+                                   BufferedReader inputStream, Writer writer, boolean keepAlive) throws IOException {
         String responseBody;
         int statusCode = 200;
         String statusText = "OK";
@@ -807,7 +831,7 @@ class ProcessRequest implements Runnable {
                     RequestBodyParser.ParsedBody body = bodyParser.parseBody(socket.getInputStream(), headers);
                     responseBody = "{\"status\":\"updated\",\"path\":\"" + path + "\"}";
                 } catch (RequestBodyParser.PayloadTooLargeException e) {
-                    sendPayloadTooLarge(writer, version, headers);
+                    sendPayloadTooLarge(writer, version, headers, keepAlive);
                     return;
                 }
                 break;
@@ -823,13 +847,13 @@ class ProcessRequest implements Runnable {
                     statusCode = 201;
                     statusText = "Created";
                 } catch (RequestBodyParser.PayloadTooLargeException e) {
-                    sendPayloadTooLarge(writer, version, headers);
+                    sendPayloadTooLarge(writer, version, headers, keepAlive);
                     return;
                 }
                 break;
 
             default:
-                sendMethodNotAllowed(writer, version, "PUT, DELETE, POST");
+                sendMethodNotAllowed(writer, version, "PUT, DELETE, POST", keepAlive);
                 return;
         }
 
@@ -837,26 +861,38 @@ class ProcessRequest implements Runnable {
         writer.write(httpVersion + " " + statusCode + " " + statusText + "\r\n");
         writer.write("Content-Type: application/json\r\n");
         writer.write("Content-Length: " + responseBody.length() + "\r\n");
-        writer.write("Connection: close\r\n");
+        if (keepAlive) {
+            writer.write("Connection: keep-alive\r\n");
+            writer.write("Keep-Alive: timeout=" + (config.getKeepAliveTimeoutMs() / 1000) +
+                        ", max=" + config.getKeepAliveMaxRequests() + "\r\n");
+        } else {
+            writer.write("Connection: close\r\n");
+        }
         writer.write("\r\n");
         writer.write(responseBody);
         writer.flush();
     }
 
-    private void sendApiNotFound(Writer writer, String version) throws IOException {
+    private void sendApiNotFound(Writer writer, String version, boolean keepAlive) throws IOException {
         String response = "{\"error\":\"API endpoint not found\"}";
 
         String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
         writer.write(httpVersion + " 404 Not Found\r\n");
         writer.write("Content-Type: application/json\r\n");
         writer.write("Content-Length: " + response.length() + "\r\n");
-        writer.write("Connection: close\r\n");
+        if (keepAlive) {
+            writer.write("Connection: keep-alive\r\n");
+            writer.write("Keep-Alive: timeout=" + (config.getKeepAliveTimeoutMs() / 1000) +
+                        ", max=" + config.getKeepAliveMaxRequests() + "\r\n");
+        } else {
+            writer.write("Connection: close\r\n");
+        }
         writer.write("\r\n");
         writer.write(response);
         writer.flush();
     }
 
-    private void sendMethodNotAllowed(Writer writer, String version, String allowedMethods) throws IOException {
+    private void sendMethodNotAllowed(Writer writer, String version, String allowedMethods, boolean keepAlive) throws IOException {
         String response = "{\"error\":\"Method not allowed\"}";
 
         String httpVersion = useHTTP11 ? "HTTP/1.1" : "HTTP/1.0";
@@ -864,7 +900,13 @@ class ProcessRequest implements Runnable {
         writer.write("Allow: " + allowedMethods + "\r\n");
         writer.write("Content-Type: application/json\r\n");
         writer.write("Content-Length: " + response.length() + "\r\n");
-        writer.write("Connection: close\r\n");
+        if (keepAlive) {
+            writer.write("Connection: keep-alive\r\n");
+            writer.write("Keep-Alive: timeout=" + (config.getKeepAliveTimeoutMs() / 1000) +
+                        ", max=" + config.getKeepAliveMaxRequests() + "\r\n");
+        } else {
+            writer.write("Connection: close\r\n");
+        }
         writer.write("\r\n");
         writer.write(response);
         writer.flush();

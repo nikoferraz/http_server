@@ -56,6 +56,11 @@ public class ServerConfig {
     // Phase 6: Routing defaults
     private static final boolean DEFAULT_ROUTING_ENABLED = false;
 
+    // Phase 8: Keep-Alive defaults
+    private static final boolean DEFAULT_KEEP_ALIVE_ENABLED = true;
+    private static final int DEFAULT_KEEP_ALIVE_TIMEOUT_MS = 5000;
+    private static final int DEFAULT_KEEP_ALIVE_MAX_REQUESTS = 100;
+
     private Properties properties;
 
     // Configuration fields
@@ -111,6 +116,11 @@ public class ServerConfig {
     private String redirectsConfig;
     private String rewritesConfig;
     private String errorPagesConfig;
+
+    // Phase 8: Keep-Alive fields
+    private boolean keepAliveEnabled;
+    private int keepAliveTimeoutMs;
+    private int keepAliveMaxRequests;
 
     public ServerConfig() {
         this(DEFAULT_CONFIG_FILE);
@@ -194,6 +204,11 @@ public class ServerConfig {
         redirectsConfig = getStringConfig("routing.redirects", "ROUTING_REDIRECTS", null);
         rewritesConfig = getStringConfig("routing.rewrites", "ROUTING_REWRITES", null);
         errorPagesConfig = getStringConfig("routing.error.pages", "ROUTING_ERROR_PAGES", null);
+
+        // Phase 8: Keep-Alive configuration
+        keepAliveEnabled = getBooleanConfig("keep.alive.enabled", "KEEP_ALIVE_ENABLED", DEFAULT_KEEP_ALIVE_ENABLED);
+        keepAliveTimeoutMs = getIntConfig("keep.alive.timeout.ms", "KEEP_ALIVE_TIMEOUT_MS", DEFAULT_KEEP_ALIVE_TIMEOUT_MS);
+        keepAliveMaxRequests = getIntConfig("keep.alive.max.requests", "KEEP_ALIVE_MAX_REQUESTS", DEFAULT_KEEP_ALIVE_MAX_REQUESTS);
 
         validateConfiguration();
     }
@@ -428,5 +443,31 @@ public class ServerConfig {
 
     public String getErrorPagesConfig() {
         return errorPagesConfig;
+    }
+
+    // Phase 8: Keep-Alive getters
+    public boolean isKeepAliveEnabled() {
+        return keepAliveEnabled;
+    }
+
+    public int getKeepAliveTimeoutMs() {
+        return keepAliveTimeoutMs;
+    }
+
+    public int getKeepAliveMaxRequests() {
+        return keepAliveMaxRequests;
+    }
+
+    // Setters for testing
+    public void setKeepAliveEnabled(boolean enabled) {
+        this.keepAliveEnabled = enabled;
+    }
+
+    public void setKeepAliveTimeout(int timeoutMs) {
+        this.keepAliveTimeoutMs = timeoutMs;
+    }
+
+    public void setKeepAliveMaxRequests(int maxRequests) {
+        this.keepAliveMaxRequests = maxRequests;
     }
 }
