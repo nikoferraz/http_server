@@ -10,9 +10,23 @@ public class HealthCheckHandler {
 
     private static final long MIN_DISK_SPACE_MB = 100;
     private final File webroot;
+    private final CacheManager cacheManager;
+    private final CompressionHandler compressionHandler;
+    private final MetricsCollector metrics;
 
     public HealthCheckHandler(File webroot) {
         this.webroot = webroot;
+        this.cacheManager = null;
+        this.compressionHandler = null;
+        this.metrics = null;
+    }
+
+    public HealthCheckHandler(File webroot, CacheManager cacheManager,
+                            CompressionHandler compressionHandler, MetricsCollector metrics) {
+        this.webroot = webroot;
+        this.cacheManager = cacheManager;
+        this.compressionHandler = compressionHandler;
+        this.metrics = metrics;
     }
 
     public void handleHealthCheck(Writer writer, String path, String version) throws IOException {
@@ -25,6 +39,9 @@ public class HealthCheckHandler {
                 break;
             case "/health/startup":
                 handleStartupProbe(writer, version);
+                break;
+            case "/health/metrics":
+                handleMetrics(writer, version);
                 break;
             default:
                 sendNotFound(writer, version);
@@ -126,6 +143,29 @@ public class HealthCheckHandler {
 
     private String getCurrentTimestamp() {
         return ZonedDateTime.now().format(DateTimeFormatter.ISO_INSTANT);
+    }
+
+    private void handleMetrics(Writer writer, String version) throws IOException {
+        // Record cache metrics before exporting
+        if (cacheManager != null && metrics != null) {
+            cacheManager.recordMetrics(metrics);
+        }
+        if (compressionHandler != null && metrics != null) {
+            compressionHandler.recordMetrics(metrics);
+        }
+
+        // Export Prometheus metrics
+        String metricsOutput = metrics != null ? metrics.exportPrometheusMetrics() : "";
+
+        String httpVersion = version.startsWith("HTTP/1.1") ? "HTTP/1.1" : "HTTP/1.0";
+        writer.write(httpVersion + " 200 OK\r\n");
+        writer.write("Content-Type: text/plain; version=0.0.4\r\n");
+        writer.write("Content-Length: " + metricsOutput.length() + "\r\n");
+        writer.write("Cache-Control: no-cache\r\n");
+        writer.write("Connection: close\r\n");
+        writer.write("\r\n");
+        writer.write(metricsOutput);
+        writer.flush();
     }
 
     private void sendNotFound(Writer writer, String version) throws IOException {

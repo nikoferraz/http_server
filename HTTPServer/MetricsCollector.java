@@ -156,6 +156,20 @@ public class MetricsCollector {
         setGauge("compression_ratio", value);
     }
 
+    public void recordCacheMetrics(String cacheName, long hits, long misses, long size) {
+        String prefix = "cache_" + cacheName + "_";
+
+        // Record as gauges (current values)
+        gauges.computeIfAbsent(prefix + "hits", k -> new AtomicLong(0)).set(hits);
+        gauges.computeIfAbsent(prefix + "misses", k -> new AtomicLong(0)).set(misses);
+        gauges.computeIfAbsent(prefix + "size", k -> new AtomicLong(0)).set(size);
+
+        // Calculate hit rate percentage
+        long total = hits + misses;
+        long hitRatePercent = total == 0 ? 0 : (hits * 100) / total;
+        gauges.computeIfAbsent(prefix + "hit_rate_percent", k -> new AtomicLong(0)).set(hitRatePercent);
+    }
+
     public String exportPrometheusMetrics() {
         StringBuilder sb = new StringBuilder();
 

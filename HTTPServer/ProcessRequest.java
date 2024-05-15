@@ -65,7 +65,7 @@ class ProcessRequest implements Runnable {
         this.cacheManager = new CacheManager();
 
         this.metrics = MetricsCollector.getInstance();
-        this.healthCheckHandler = new HealthCheckHandler(webroot);
+        this.healthCheckHandler = new HealthCheckHandler(webroot, cacheManager, compressionHandler, metrics);
         this.bodyParser = new RequestBodyParser(config.getRequestBodyMaxSizeBytes());
         this.structuredLogger = new StructuredLogger(auditLog, config.isJsonLogging(), config.getLoggingLevel());
         this.requestId = structuredLogger.generateRequestId();
@@ -424,20 +424,44 @@ class ProcessRequest implements Runnable {
         if (useCompression && content != null) {
             outputStream.write(content);
         } else {
-            ByteBuffer pooledBuffer = bufferPool.acquire();
-            try (FileInputStream fis = new FileInputStream(file)) {
-                byte[] buffer = pooledBuffer.array();
-                int bytesRead;
-                while ((bytesRead = fis.read(buffer)) != -1) {
-                    outputStream.write(buffer, 0, bytesRead);
-                }
-            } finally {
-                bufferPool.release(pooledBuffer);
+            // Determine if we should use zero-copy for large uncompressed files
+            boolean useZeroCopy = fileLength >= config.getZeroCopyThreshold();
+
+            if (useZeroCopy) {
+                sendFileZeroCopy(file, outputStream);
+            } else {
+                sendFileBuffered(file, outputStream);
             }
         }
 
         logRequest("GET", file.getName(), version, code, contentLength);
         outputStream.flush();
+    }
+
+    private void sendFileZeroCopy(File file, OutputStream outputStream) throws IOException {
+        try {
+            boolean used = ZeroCopyTransferHandler.transferZeroCopy(file, outputStream);
+            if (!used) {
+                // Fall back to buffered if zero-copy failed
+                sendFileBuffered(file, outputStream);
+            }
+        } catch (IOException e) {
+            // Fall back to buffered on any error
+            sendFileBuffered(file, outputStream);
+        }
+    }
+
+    private void sendFileBuffered(File file, OutputStream outputStream) throws IOException {
+        ByteBuffer pooledBuffer = bufferPool.acquire();
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] buffer = pooledBuffer.array();
+            int bytesRead;
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                outputStream.write(buffer, 0, bytesRead);
+            }
+        } finally {
+            bufferPool.release(pooledBuffer);
+        }
     }
 
     private void HTTPHead(Writer writer, File file, String mimeType, String version, Map<String, String> headers, boolean keepAlive) throws IOException {

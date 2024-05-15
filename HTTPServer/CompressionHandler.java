@@ -306,4 +306,14 @@ public class CompressionHandler {
         cacheHits.set(0);
         cacheMisses.set(0);
     }
+
+    /**
+     * Records cache metrics to the MetricsCollector for Prometheus export.
+     */
+    public void recordMetrics(MetricsCollector metrics) {
+        metrics.recordCacheMetrics("compression",
+            cacheHits.get(),
+            cacheMisses.get(),
+            compressionCache.size());
+    }
 }

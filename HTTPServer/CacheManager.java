@@ -312,4 +312,14 @@ public class CacheManager {
     public long getCacheMisses() {
         return cacheMisses.get();
     }
+
+    /**
+     * Records cache metrics to the MetricsCollector for Prometheus export.
+     */
+    public void recordMetrics(MetricsCollector metrics) {
+        metrics.recordCacheMetrics("etag",
+            cacheHits.get(),
+            cacheMisses.get(),
+            etagCache.size());
+    }
 }
