@@ -1,0 +1,227 @@
+groups:
+  - name: http-server-canary
+    interval: 30s
+    rules:
+      # CRITICAL ALERTS - Trigger immediate rollback
+      - alert: CanaryHighErrorRate
+        expr: |
+          (rate(http_requests_total{version="v2-optimized",status=~"5.."}[5m])
+           / rate(http_requests_total{version="v2-optimized"}[5m])) > 0.005
+        for: 1m
+        labels:
+          severity: critical
+          action: rollback_immediately
+        annotations:
+          summary: "Canary error rate critically high ({{ $value | humanizePercentage }})"
+          description: "Canary version v2-optimized has error rate > 0.5% for 1 minute. Immediate rollback required."
+          runbook_url: "https://runbooks.example.com/canary-error-rate"
+
+      - alert: CanaryHighLatencyP99
+        expr: |
+          (histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{version="v2-optimized"}[5m])) * 1000)
+          >
+          (histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{version="v1-stable"}[5m])) * 1000 * 1.2)
+        for: 5m
+        labels:
+          severity: critical
+          action: rollback_if_confirmed
+        annotations:
+          summary: "Canary p99 latency too high: {{ $value | humanize }}ms"
+          description: "p99 latency on canary (v2-optimized) exceeds baseline by >20% for 5 minutes. Review and consider rollback."
+          runbook_url: "https://runbooks.example.com/canary-latency"
+
+      - alert: CanaryMemoryLeak
+        expr: |
+          rate(jvm_memory_used_bytes{version="v2-optimized",area="heap"}[15m]) > 52428800
+        for: 15m
+        labels:
+          severity: critical
+          action: investigate_and_rollback
+        annotations:
+          summary: "Canary showing memory leak pattern (> 50MB/15min)"
+          description: "Heap memory growth on canary instance exceeds 50MB/15min. Possible memory leak. Investigate immediately."
+          runbook_url: "https://runbooks.example.com/canary-memory"
+
+      - alert: CanaryOutOfMemory
+        expr: |
+          (jvm_memory_used_bytes{version="v2-optimized",area="heap"}
+           / jvm_memory_max_bytes{version="v2-optimized",area="heap"}) > 0.9
+        for: 2m
+        labels:
+          severity: critical
+          action: rollback_immediately
+        annotations:
+          summary: "Canary heap memory > 90%"
+          description: "Heap memory utilization on canary > 90%. Risk of OOM. Rollback immediately."
+          runbook_url: "https://runbooks.example.com/canary-oom"
+
+      - alert: CanaryGCPauseTooLong
+        expr: |
+          jvm_gc_pause_seconds{version="v2-optimized",quantile="1"} > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          action: investigate
+        annotations:
+          summary: "Canary GC pauses > 50ms"
+          description: "Garbage collection pause times exceed 50ms on canary. May indicate GC tuning issues."
+          runbook_url: "https://runbooks.example.com/canary-gc"
+
+      # WARNING ALERTS - Require investigation
+      - alert: CanaryHighCPU
+        expr: |
+          (rate(process_cpu_seconds_total{version="v2-optimized"}[1m]) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+          action: investigate
+        annotations:
+          summary: "Canary CPU usage high ({{ $value | humanize }}%)"
+          description: "Canary CPU usage sustained above 80% for 10 minutes. Check for inefficiencies."
+          runbook_url: "https://runbooks.example.com/canary-cpu"
+
+      - alert: CanaryHighLatencyVariance
+        expr: |
+          (histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{version="v2-optimized"}[5m])) -
+           histogram_quantile(0.50, rate(http_request_duration_seconds_bucket{version="v2-optimized"}[5m]))) * 1000 > 100
+        for: 10m
+        labels:
+          severity: warning
+          action: investigate
+        annotations:
+          summary: "Canary latency variance high (p99-p50 > 100ms)"
+          description: "High variance between p50 and p99 latency. May indicate tail latency issues."
+          runbook_url: "https://runbooks.example.com/canary-variance"
+
+      - alert: CanaryThreadPoolExhausted
+        expr: |
+          (jvm_threads_live_threads{version="v2-optimized"}
+           / jvm_threads_peak_threads{version="v2-optimized"}) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          action: investigate
+        annotations:
+          summary: "Canary thread pool near capacity"
+          description: "Live threads > 90% of peak. May cause connection rejections."
+          runbook_url: "https://runbooks.example.com/canary-threads"
+
+      - alert: CanaryCacheLowHitRate
+        expr: |
+          (rate(cache_hits_total{version="v2-optimized"}[5m])
+           / (rate(cache_hits_total{version="v2-optimized"}[5m]) + rate(cache_misses_total{version="v2-optimized"}[5m]))) < 0.5
+        for: 10m
+        labels:
+          severity: info
+          action: investigate
+        annotations:
+          summary: "Canary cache hit rate low: {{ $value | humanizePercentage }}"
+          description: "Cache hit rate below 50%. Check cache configuration and request patterns."
+          runbook_url: "https://runbooks.example.com/canary-cache"
+
+      # PERFORMANCE VALIDATION ALERTS - Positive indicators
+      - alert: CanaryPerformanceImprovement
+        expr: |
+          (histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{version="v1-stable"}[5m])) * 1000)
+          >
+          (histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{version="v2-optimized"}[5m])) * 1000 * 1.1)
+        for: 5m
+        labels:
+          severity: info
+          action: validation_passed
+        annotations:
+          summary: "Canary showing performance improvement!"
+          description: "v2-optimized p99 latency is > 10% faster than v1-stable. Positive indicator for rollout."
+
+      - alert: CanaryHighCacheHitRate
+        expr: |
+          (rate(cache_hits_total{version="v2-optimized"}[5m])
+           / (rate(cache_hits_total{version="v2-optimized"}[5m]) + rate(cache_misses_total{version="v2-optimized"}[5m]))) > 0.7
+        for: 5m
+        labels:
+          severity: info
+          action: validation_passed
+        annotations:
+          summary: "Canary cache hit rate excellent: {{ $value | humanizePercentage }}"
+          description: "Cache effectiveness confirmed. Hit rate > 70%. Cache optimizations working as expected."
+
+      - alert: CanaryMemoryEfficient
+        expr: |
+          (jvm_memory_used_bytes{version="v2-optimized",area="heap"}
+           < jvm_memory_used_bytes{version="v1-stable",area="heap"} * 0.9)
+        for: 10m
+        labels:
+          severity: info
+          action: validation_passed
+        annotations:
+          summary: "Canary showing memory efficiency!"
+          description: "v2-optimized using ~10% less heap than v1-stable. Memory optimizations working."
+
+      # STABILITY CHECKS - Verify no unexpected errors
+      - alert: CanaryUnexpectedExceptions
+        expr: |
+          rate(exceptions_total{version="v2-optimized"}[5m]) >
+          rate(exceptions_total{version="v1-stable"}[5m]) * 2
+        for: 5m
+        labels:
+          severity: warning
+          action: investigate
+        annotations:
+          summary: "Canary exception rate double that of stable"
+          description: "Exception rate on canary v2 is 2x higher than stable v1. Check application logs."
+          runbook_url: "https://runbooks.example.com/canary-exceptions"
+
+      - alert: CanaryConnectionRefused
+        expr: |
+          rate(http_connections_refused_total{version="v2-optimized"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          action: investigate
+        annotations:
+          summary: "Canary refusing connections"
+          description: "Canary is refusing connections. May indicate thread pool or resource exhaustion."
+          runbook_url: "https://runbooks.example.com/canary-refused"
+
+  - name: http-server-general
+    interval: 30s
+    rules:
+      - alert: HTTPServerDown
+        expr: |
+          up{job=~"http-server-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP Server instance down: {{ $labels.job }}"
+          description: "{{ $labels.instance }} is down. Immediate investigation required."
+
+      - alert: HTTPServerHighRequestRate
+        expr: |
+          rate(http_requests_total[1m]) > 50000
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "High request rate: {{ $value | humanize }} req/s"
+          description: "Request rate exceeds 50K/s. Monitor for resource constraints."
+
+      - alert: HTTPServerHighResponseTime
+        expr: |
+          histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) * 1000 > 500
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High response time p95: {{ $value | humanize }}ms"
+          description: "95th percentile response time exceeds 500ms. Investigate performance."
+
+      - alert: HTTPServerHighErrorRate
+        expr: |
+          rate(http_requests_total{status=~"5.."}[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate: {{ $value | humanizePercentage }}"
+          description: "Server error rate exceeds 1%. Check logs for root cause."

@@ -1,0 +1,48 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'http-server-monitor'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - localhost:9093
+
+rule_files:
+  - 'prometheus-alerts.yaml'
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'http-server-stable'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['http-server-stable:8080']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'http-server-stable'
+      - source_labels: [__address__]
+        target_label: version
+        replacement: 'v1-stable'
+
+  - job_name: 'http-server-canary'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['http-server-canary:8080']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'http-server-canary'
+      - source_labels: [__address__]
+        target_label: version
+        replacement: 'v2-optimized'
+
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:80']
+    metrics_path: '/metrics'

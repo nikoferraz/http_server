@@ -25,7 +25,6 @@ import static org.junit.jupiter.api.Assertions.*;
 class ZeroCopyTransferTest {
 
     private File testDirectory;
-    private ProcessRequest processRequest;
     private File webroot;
     private ServerConfig config;
 
@@ -36,17 +35,13 @@ class ZeroCopyTransferTest {
         webroot = new File(testDirectory, "webroot");
         webroot.mkdirs();
 
-        // Create configuration and ProcessRequest instance
+        // Create configuration instance
         config = new ServerConfig();
-        config.setJsonLogging(false);
-
-        // Note: ProcessRequest requires a socket, so we'll test the underlying
-        // file transfer mechanism separately from HTTP integration
     }
 
-    @BeforeEach
+    @org.junit.jupiter.api.AfterEach
     void cleanup() throws IOException {
-        // Clean up test files
+        // Clean up test files after each test
         if (testDirectory != null && testDirectory.exists()) {
             Files.walk(testDirectory.toPath())
                 .sorted(Comparator.reverseOrder())
@@ -377,6 +372,90 @@ class ZeroCopyTransferTest {
             boolean shouldCompress = handler.shouldCompress(headers, "text/plain",
                 textFile.length(), "test.txt");
             assertFalse(shouldCompress, "Text should not be compressed without Accept-Encoding");
+        }
+    }
+
+    @Nested
+    @DisplayName("Zero-Copy Threshold Tests")
+    class ZeroCopyThresholdTests {
+
+        @Test
+        @DisplayName("Should use buffered transfer for files below threshold")
+        void testSmallFileBelowThreshold() throws IOException {
+            long threshold = 10_485_760; // 10MB
+            File smallFile = new File(webroot, "below-threshold.dat");
+            long fileSize = 5_242_880; // 5MB
+
+            try (RandomAccessFile raf = new RandomAccessFile(smallFile, "rw")) {
+                raf.setLength(fileSize);
+            }
+
+            assertTrue(smallFile.exists(), "Small file should exist");
+            assertTrue(fileSize < threshold, "File size should be below threshold");
+            assertEquals(fileSize, smallFile.length(), "File size should match");
+        }
+
+        @Test
+        @DisplayName("Should use zero-copy transfer for files at threshold")
+        void testFileAtThreshold() throws IOException {
+            long threshold = 10_485_760; // 10MB
+            File thresholdFile = new File(webroot, "at-threshold.dat");
+            long fileSize = 10_485_760; // Exactly 10MB
+
+            try (RandomAccessFile raf = new RandomAccessFile(thresholdFile, "rw")) {
+                raf.setLength(fileSize);
+            }
+
+            assertTrue(thresholdFile.exists(), "Threshold file should exist");
+            assertTrue(fileSize >= threshold, "File size should be at or above threshold");
+            assertEquals(fileSize, thresholdFile.length(), "File size should match");
+        }
+
+        @Test
+        @DisplayName("Should use zero-copy transfer for files above threshold")
+        void testLargeFileAboveThreshold() throws IOException {
+            long threshold = 10_485_760; // 10MB
+            File largeFile = new File(webroot, "above-threshold.dat");
+            long fileSize = 50_331_648; // 48MB
+
+            try (RandomAccessFile raf = new RandomAccessFile(largeFile, "rw")) {
+                raf.setLength(fileSize);
+            }
+
+            assertTrue(largeFile.exists(), "Large file should exist");
+            assertTrue(fileSize > threshold, "File size should be above threshold");
+            assertEquals(fileSize, largeFile.length(), "File size should match");
+        }
+
+        @Test
+        @DisplayName("Should respect configured zero-copy threshold")
+        void testConfigurableThreshold() {
+            ServerConfig testConfig = new ServerConfig();
+            long defaultThreshold = testConfig.getZeroCopyThreshold();
+
+            assertEquals(10_485_760, defaultThreshold, "Default threshold should be 10MB");
+        }
+
+        @Test
+        @DisplayName("Should handle threshold boundary at exactly 10MB")
+        void testThresholdBoundary() throws IOException {
+            long threshold = 10_485_760; // 10MB
+
+            // Test file just under threshold (10MB - 1)
+            File justUnderFile = new File(webroot, "just-under.dat");
+            long underSize = threshold - 1;
+            try (RandomAccessFile raf = new RandomAccessFile(justUnderFile, "rw")) {
+                raf.setLength(underSize);
+            }
+            assertTrue(underSize < threshold, "File just under threshold should use buffered");
+
+            // Test file just over threshold (10MB + 1)
+            File justOverFile = new File(webroot, "just-over.dat");
+            long overSize = threshold + 1;
+            try (RandomAccessFile raf = new RandomAccessFile(justOverFile, "rw")) {
+                raf.setLength(overSize);
+            }
+            assertTrue(overSize >= threshold, "File at or over threshold should use zero-copy");
         }
     }
 

@@ -61,6 +61,9 @@ public class ServerConfig {
     private static final int DEFAULT_KEEP_ALIVE_TIMEOUT_MS = 5000;
     private static final int DEFAULT_KEEP_ALIVE_MAX_REQUESTS = 100;
 
+    // Phase 9: Zero-copy transfer defaults
+    private static final long DEFAULT_ZERO_COPY_THRESHOLD = 10_485_760; // 10MB
+
     private Properties properties;
 
     // Configuration fields
@@ -121,6 +124,9 @@ public class ServerConfig {
     private boolean keepAliveEnabled;
     private int keepAliveTimeoutMs;
     private int keepAliveMaxRequests;
+
+    // Phase 9: Zero-copy transfer fields
+    private long zeroCopyThreshold;
 
     public ServerConfig() {
         this(DEFAULT_CONFIG_FILE);
@@ -210,6 +216,9 @@ public class ServerConfig {
         keepAliveTimeoutMs = getIntConfig("keep.alive.timeout.ms", "KEEP_ALIVE_TIMEOUT_MS", DEFAULT_KEEP_ALIVE_TIMEOUT_MS);
         keepAliveMaxRequests = getIntConfig("keep.alive.max.requests", "KEEP_ALIVE_MAX_REQUESTS", DEFAULT_KEEP_ALIVE_MAX_REQUESTS);
 
+        // Phase 9: Zero-copy transfer configuration
+        zeroCopyThreshold = getLongConfig("zero.copy.threshold.bytes", "ZERO_COPY_THRESHOLD_BYTES", DEFAULT_ZERO_COPY_THRESHOLD);
+
         validateConfiguration();
     }
 
@@ -250,6 +259,16 @@ public class ServerConfig {
             return Integer.parseInt(value);
         } catch (NumberFormatException e) {
             logger.warning("Invalid integer value for " + propertyKey + ": " + value + ", using default: " + defaultValue);
+            return defaultValue;
+        }
+    }
+
+    private long getLongConfig(String propertyKey, String envKey, long defaultValue) {
+        String value = getStringConfig(propertyKey, envKey, String.valueOf(defaultValue));
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            logger.warning("Invalid long value for " + propertyKey + ": " + value + ", using default: " + defaultValue);
             return defaultValue;
         }
     }
@@ -456,6 +475,11 @@ public class ServerConfig {
 
     public int getKeepAliveMaxRequests() {
         return keepAliveMaxRequests;
+    }
+
+    // Phase 9: Zero-copy transfer getter
+    public long getZeroCopyThreshold() {
+        return zeroCopyThreshold;
     }
 
     // Setters for testing

@@ -1,0 +1,207 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: http-server-canary
+  namespace: http-server
+  labels:
+    app: http-server
+    version: v2-optimized
+    track: canary
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Canary deployments don't use RollingUpdate
+  selector:
+    matchLabels:
+      app: http-server
+      track: canary
+  template:
+    metadata:
+      labels:
+        app: http-server
+        version: v2-optimized
+        track: canary
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+        deployment.phase: "canary"
+    spec:
+      serviceAccountName: http-server
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+      - name: http-server
+        image: your-registry/http-server:v2-optimized
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+
+        env:
+        - name: JAVA_OPTS
+          value: >-
+            -server
+            -XX:+UseG1GC
+            -XX:MaxGCPauseMillis=50
+            -XX:+HeapDumpOnOutOfMemoryError
+            -XX:HeapDumpPath=/app/logs/heapdump.hprof
+            -Xms2g
+            -Xmx2g
+
+        # v2 Optimizations Enabled
+        - name: KEEP_ALIVE_ENABLED
+          value: "true"
+        - name: KEEP_ALIVE_TIMEOUT_MS
+          value: "5000"
+
+        - name: CACHE_ENABLE_ETAG
+          value: "true"
+        - name: CACHE_MAX_SIZE
+          value: "10000"
+
+        - name: CACHE_ENABLE_COMPRESSION
+          value: "true"
+        - name: CACHE_COMPRESSION_MAX_SIZE
+          value: "5000"
+
+        - name: BUFFER_POOL_ENABLED
+          value: "true"
+        - name: BUFFER_POOL_SIZE
+          value: "1024"
+
+        - name: VIRTUAL_THREADS_ENABLED
+          value: "true"
+
+        - name: ZERO_COPY_ENABLED
+          value: "true"
+        - name: ZERO_COPY_MIN_FILE_SIZE_MB
+          value: "10"
+
+        - name: RATE_LIMIT_ENABLED
+          value: "true"
+        - name: RATE_LIMIT_RPS
+          value: "10000"
+        - name: RATE_LIMIT_BURST
+          value: "1000"
+
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+        startupProbe:
+          httpGet:
+            path: /health/startup
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 1
+          timeoutSeconds: 3
+          failureThreshold: 30
+
+        volumeMounts:
+        - name: webroot
+          mountPath: /app/webroot
+          readOnly: true
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: logs
+          mountPath: /app/logs
+        - name: tmp
+          mountPath: /tmp
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+              - ALL
+
+      # Canary: No pod anti-affinity to allow multiple on same node during testing
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: node-role.kubernetes.io/worker
+                operator: In
+                values:
+                - "true"
+
+      volumes:
+      - name: webroot
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: http-server-config
+      - name: logs
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+
+      # Pod Disruption Budget for stability during canary
+      podDisruptionBudget:
+        minAvailable: 1
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: http-server-canary
+  namespace: http-server
+  labels:
+    app: http-server
+    version: v2-optimized
+spec:
+  type: ClusterIP
+  selector:
+    app: http-server
+    track: canary
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  sessionAffinity: None
+  publishNotReadyAddresses: false
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: http-server-canary-pdb
+  namespace: http-server
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: http-server
+      track: canary

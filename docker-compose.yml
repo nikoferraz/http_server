@@ -1,0 +1,147 @@
+version: '3.8'
+
+services:
+  http-server-stable:
+    image: http-server:v1-stable
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: http-server-stable
+    ports:
+      - "8080:8080"
+    environment:
+      - JAVA_OPTS=-Xms1g -Xmx1g -XX:+UseG1GC
+      - KEEP_ALIVE_ENABLED=false
+      - RATE_LIMIT_ENABLED=true
+      - RATE_LIMIT_RPS=5000
+      - RATE_LIMIT_BURST=500
+    volumes:
+      - ./webroot:/app/webroot:ro
+      - http-server-stable-logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
+
+  http-server-canary:
+    image: http-server:v2-optimized
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: http-server-canary
+    ports:
+      - "8081:8080"
+    environment:
+      - JAVA_OPTS=-Xms2g -Xmx2g -XX:+UseG1GC -XX:MaxGCPauseMillis=50
+      - KEEP_ALIVE_ENABLED=true
+      - KEEP_ALIVE_TIMEOUT_MS=5000
+      - CACHE_ENABLE_ETAG=true
+      - CACHE_ENABLE_COMPRESSION=true
+      - CACHE_MAX_SIZE=10000
+      - RATE_LIMIT_ENABLED=true
+      - RATE_LIMIT_RPS=10000
+      - RATE_LIMIT_BURST=1000
+      - VIRTUAL_THREADS_ENABLED=true
+      - BUFFER_POOL_ENABLED=true
+      - ZERO_COPY_ENABLED=true
+      - ZERO_COPY_MIN_FILE_SIZE_MB=10
+    volumes:
+      - ./webroot:/app/webroot:ro
+      - http-server-canary-logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      http-server-stable:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1.5'
+          memory: 2G
+
+  nginx:
+    image: nginx:alpine
+    container_name: http-router
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/canary.conf:/etc/nginx/conf.d/canary.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - http-server-stable
+      - http-server-canary
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus-alerts.yaml:/etc/prometheus/prometheus-alerts.yaml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+    restart: unless-stopped
+    depends_on:
+      - http-server-stable
+      - http-server-canary
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  http-server-stable-logs:
+    driver: local
+  http-server-canary-logs:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+networks:
+  default:
+    name: http-server-network
+    driver: bridge

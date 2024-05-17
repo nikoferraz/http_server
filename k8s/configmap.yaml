@@ -1,0 +1,204 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: http-server-config
+  namespace: http-server
+data:
+  config.properties: |
+    # HTTP Server Configuration
+    server.port=8080
+    server.host=0.0.0.0
+
+    # Keep-Alive Settings
+    keep.alive.enabled=true
+    keep.alive.timeout.ms=5000
+    keep.alive.max.requests=100
+
+    # Cache Settings
+    cache.etag.enabled=true
+    cache.etag.max.size=10000
+    cache.compression.enabled=true
+    cache.compression.max.size=5000
+    cache.eviction.policy=LRU
+
+    # Buffer Pool Settings
+    buffer.pool.enabled=true
+    buffer.pool.size=1024
+    buffer.pool.buffer.size=8192
+
+    # Virtual Threads
+    virtual.threads.enabled=true
+    virtual.threads.max.concurrent=50000
+
+    # Zero Copy
+    zero.copy.enabled=true
+    zero.copy.min.file.size.mb=10
+
+    # Rate Limiting
+    rate.limit.enabled=true
+    rate.limit.requests.per.second=10000
+    rate.limit.burst.size=1000
+    rate.limit.whitelist.ips=127.0.0.1,::1
+
+    # TLS/SSL
+    tls.enabled=false
+    tls.keystore.path=/app/config/keystore.jks
+    tls.keystore.password=changeit
+
+    # Logging
+    logging.level=INFO
+    logging.format=JSON
+
+    # Graceful Shutdown
+    shutdown.timeout.seconds=30
+    shutdown.max.requests.in.flight=10000
+
+    # Request Parsing
+    request.max.header.size=8192
+    request.max.body.size=10485760
+    request.body.parse.enabled=true
+
+    # Virtual Hosting
+    virtual.hosts.enabled=true
+    virtual.hosts.config.file=/app/config/virtual-hosts.json
+
+    # URL Routing
+    routing.enabled=true
+    routing.config.file=/app/config/routes.json
+
+    # Authentication
+    authentication.enabled=true
+    authentication.jwt.secret=your-secret-key-change-in-production
+    authentication.api.key.header=X-API-Key
+
+  virtual-hosts.json: |
+    {
+      "hosts": [
+        {
+          "name": "api.example.com",
+          "documentRoot": "/app/webroot/api",
+          "ssl": true
+        },
+        {
+          "name": "static.example.com",
+          "documentRoot": "/app/webroot/static",
+          "cacheEnabled": true
+        }
+      ]
+    }
+
+  routes.json: |
+    {
+      "routes": [
+        {
+          "pattern": "/health.*",
+          "handler": "healthCheck",
+          "authentication": "none"
+        },
+        {
+          "pattern": "/api/v1/.*",
+          "handler": "apiGateway",
+          "authentication": "required"
+        },
+        {
+          "pattern": "^/old-path/(.*)",
+          "redirect": "/new-path/$1",
+          "permanent": true
+        }
+      ]
+    }
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: http-server
+data:
+  canary.conf: |
+    upstream backend_stable {
+        least_conn;
+        server http-server-stable:8080 max_fails=3 fail_timeout=10s;
+    }
+
+    upstream backend_canary {
+        least_conn;
+        server http-server-canary:8080 max_fails=3 fail_timeout=10s;
+    }
+
+    # Map for canary traffic splitting (1%, 5%, 25%, 75%, 100%)
+    split_clients "${remote_addr}${http_user_agent}${date_gmt}" $backend {
+        1%     backend_canary;
+        *      backend_stable;
+    }
+
+    # Alternative for debugging - fixed header based routing
+    map $http_x_canary_enabled $backend_debug {
+        "true"  backend_canary;
+        default backend_stable;
+    }
+
+    upstream metrics_exporter {
+        server localhost:9100;
+    }
+
+    server {
+        listen 80;
+        server_name _;
+
+        # Logging
+        access_log /var/log/nginx/access.log combined;
+        error_log /var/log/nginx/error.log warn;
+
+        # Client timeouts
+        client_body_timeout 10s;
+        client_header_timeout 10s;
+        send_timeout 30s;
+
+        # Buffering settings
+        proxy_buffering on;
+        proxy_buffer_size 4k;
+        proxy_buffers 8 4k;
+
+        location / {
+            proxy_pass http://$backend;
+            proxy_http_version 1.1;
+
+            # Headers
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Canary-Route $backend;
+
+            # Keep-Alive
+            proxy_set_header Connection "";
+            proxy_http_version 1.1;
+
+            # Timeouts
+            proxy_connect_timeout 5s;
+            proxy_send_timeout 30s;
+            proxy_read_timeout 30s;
+
+            # Don't rewrite location headers
+            proxy_redirect off;
+
+            # Disable proxy caching (let origin handle it)
+            proxy_cache off;
+        }
+
+        # Health checks - route to both backends
+        location /health/ {
+            access_log off;
+
+            # Return synthetic health response
+            add_header Content-Type application/json;
+            return 200 '{"status":"UP","check":"nginx-proxy"}';
+        }
+
+        # Metrics for monitoring
+        location /metrics {
+            proxy_pass http://metrics_exporter;
+            access_log off;
+        }
+    }
