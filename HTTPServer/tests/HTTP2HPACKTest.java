@@ -85,12 +85,10 @@ public class HTTP2HPACKTest {
         byte[] encoded = encoder.encode(original);
         Map<String, String> decoded = decoder.decode(encoded);
 
-        assertThat(decoded).containsEntries(
-            ":method", "GET",
-            ":path", "/",
-            ":scheme", "https",
-            ":authority", "www.example.com"
-        );
+        assertThat(decoded).containsEntry(":method", "GET");
+        assertThat(decoded).containsEntry(":path", "/");
+        assertThat(decoded).containsEntry(":scheme", "https");
+        assertThat(decoded).containsEntry(":authority", "www.example.com");
     }
 
     @Test
