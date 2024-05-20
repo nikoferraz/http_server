@@ -100,7 +100,7 @@ public class QuickSoakTest {
             );
 
             scheduler.scheduleAtFixedRate(
-                new RequestStatsMonitor(endTime),
+                new RequestStatsMonitor(),
                 0, 30, TimeUnit.SECONDS
             );
 
@@ -265,7 +265,7 @@ public class QuickSoakTest {
     private void cleanup() throws Exception {
         log("Cleaning up...");
         if (testServer != null) {
-            testServer.stopServer();
+            testServer.interrupt();
         }
         executor.shutdownNow();
         scheduler.shutdownNow();
@@ -287,6 +287,7 @@ public class QuickSoakTest {
         private final long endTime;
         private final long delayBetweenRequests;
         private final long requestLimit;
+        private final Random random;
 
         private long requestCount = 0;
         private long errorCount = 0;
@@ -298,13 +299,13 @@ public class QuickSoakTest {
             "/file_10.txt",
             "/file_19.txt"
         };
-        private final Random random = new Random(clientId);
 
         public LoadGenerator(int clientId, long endTime, long delayBetweenRequests, long requestLimit) {
             this.clientId = clientId;
             this.endTime = endTime;
             this.delayBetweenRequests = delayBetweenRequests;
             this.requestLimit = requestLimit;
+            this.random = new Random(clientId);
         }
 
         @Override

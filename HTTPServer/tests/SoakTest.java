@@ -112,7 +112,7 @@ public class SoakTest {
             );
 
             scheduler.scheduleAtFixedRate(
-                new RequestStatsMonitor(endTime),
+                new RequestStatsMonitor(),
                 0, 1, TimeUnit.MINUTES
             );
 
@@ -282,7 +282,7 @@ public class SoakTest {
     private void cleanup() throws Exception {
         log("Cleaning up...");
         if (testServer != null) {
-            testServer.stopServer();
+            testServer.interrupt();
         }
         executor.shutdownNow();
         scheduler.shutdownNow();
@@ -304,6 +304,7 @@ public class SoakTest {
         private final long endTime;
         private final long delayBetweenRequests;
         private final long requestLimit;
+        private final Random random;
 
         private long requestCount = 0;
         private long errorCount = 0;
@@ -315,13 +316,13 @@ public class SoakTest {
             "/file_25.txt",
             "/file_49.txt"
         };
-        private final Random random = new Random(clientId);
 
         public LoadGenerator(int clientId, long endTime, long delayBetweenRequests, long requestLimit) {
             this.clientId = clientId;
             this.endTime = endTime;
             this.delayBetweenRequests = delayBetweenRequests;
             this.requestLimit = requestLimit;
+            this.random = new Random(clientId);
         }
 
         @Override
@@ -455,7 +456,6 @@ public class SoakTest {
      * Monitor request statistics.
      */
     private class RequestStatsMonitor implements Runnable {
-        private final long endTime;
         private long lastRequests = 0;
         private long lastTime = System.currentTimeMillis();
 
