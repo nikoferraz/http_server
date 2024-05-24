@@ -56,6 +56,9 @@ class ProcessRequest implements Runnable {
     private TraceContextHandler traceContextHandler;
     private GracefulShutdownHandler gracefulShutdownHandler;
 
+    private WebSocketHandler webSocketHandler;
+    private boolean webSocketEnabled = false;
+
     public ProcessRequest(File webroot, Socket socket, Logger auditLog) {
         this(webroot, socket, auditLog, new ServerConfig());
     }
@@ -88,6 +91,11 @@ class ProcessRequest implements Runnable {
 
     public void setRateLimiter(RateLimiter rateLimiter) {
         this.rateLimiter = rateLimiter;
+    }
+
+    public void setWebSocketHandler(WebSocketHandler handler) {
+        this.webSocketHandler = handler;
+        this.webSocketEnabled = handler != null;
     }
 
     @Override
@@ -294,6 +302,20 @@ class ProcessRequest implements Runnable {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
                 sendBadRequest(writer, "HTTP/1.1 requires Host header", keepAlive);
+            }
+            return;
+        }
+
+        // Check for WebSocket upgrade request
+        if (webSocketEnabled && isWebSocketUpgradeRequest(method, headers)) {
+            try {
+                handleWebSocketUpgrade(inputStream, headers);
+            } catch (WebSocketHandshake.WebSocketHandshakeException e) {
+                try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                     Writer writer = new OutputStreamWriter(outputStream)) {
+                    sendBadRequest(writer, "WebSocket upgrade failed: " + e.getMessage(), false);
+                }
+                errorLog.log(Level.WARNING, "WebSocket handshake failed: " + e.getMessage(), e);
             }
             return;
         }
@@ -991,5 +1013,58 @@ class ProcessRequest implements Runnable {
         writer.write("\r\n");
         writer.write(response);
         writer.flush();
+    }
+
+    private boolean isWebSocketUpgradeRequest(String method, Map<String, String> headers) {
+        if (!"GET".equalsIgnoreCase(method)) {
+            return false;
+        }
+
+        String upgrade = null;
+        String connection = null;
+
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if ("upgrade".equalsIgnoreCase(entry.getKey())) {
+                upgrade = entry.getValue();
+            } else if ("connection".equalsIgnoreCase(entry.getKey())) {
+                connection = entry.getValue();
+            }
+        }
+
+        return upgrade != null && upgrade.equalsIgnoreCase("websocket") &&
+               connection != null && connection.toLowerCase().contains("upgrade");
+    }
+
+    private void handleWebSocketUpgrade(BufferedReader inputStream, Map<String, String> headers)
+            throws WebSocketHandshake.WebSocketHandshakeException, IOException {
+        // Validate the WebSocket upgrade request
+        WebSocketHandshake.HandshakeRequest request = WebSocketHandshake.validateRequest("GET", headers);
+
+        // Generate response headers
+        Map<String, String> responseHeaders = WebSocketHandshake.generateResponse(
+                request.getSecWebSocketKey(), request.getProtocol()
+        );
+
+        // Send 101 Switching Protocols response
+        try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+             Writer writer = new OutputStreamWriter(outputStream)) {
+            writer.write("HTTP/1.1 101 Switching Protocols\r\n");
+            for (Map.Entry<String, String> entry : responseHeaders.entrySet()) {
+                writer.write(entry.getKey() + ": " + entry.getValue() + "\r\n");
+            }
+            writer.write("\r\n");
+            writer.flush();
+        }
+
+        // Create and handle WebSocket connection
+        String connectionId = requestId != null ? requestId : "ws-" + System.nanoTime();
+        WebSocketConnection connection = new WebSocketConnection(socket, webSocketHandler, metrics, connectionId);
+
+        if (config.isMetricsEnabled()) {
+            metrics.incrementCounter("websocket_upgrades");
+        }
+
+        // Handle the WebSocket connection (this blocks until connection closes)
+        connection.handleConnection();
     }
 }
