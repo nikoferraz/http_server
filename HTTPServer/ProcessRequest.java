@@ -59,6 +59,10 @@ class ProcessRequest implements Runnable {
     private WebSocketHandler webSocketHandler;
     private boolean webSocketEnabled = false;
 
+    private SSEManager sseManager;
+    private SSEHandler sseHandler;
+    private boolean sseEnabled = false;
+
     public ProcessRequest(File webroot, Socket socket, Logger auditLog) {
         this(webroot, socket, auditLog, new ServerConfig());
     }
@@ -96,6 +100,12 @@ class ProcessRequest implements Runnable {
     public void setWebSocketHandler(WebSocketHandler handler) {
         this.webSocketHandler = handler;
         this.webSocketEnabled = handler != null;
+    }
+
+    public void setSSEHandler(SSEHandler handler) {
+        this.sseHandler = handler;
+        this.sseManager = SSEManager.getInstance();
+        this.sseEnabled = handler != null;
     }
 
     @Override
@@ -316,6 +326,16 @@ class ProcessRequest implements Runnable {
                     sendBadRequest(writer, "WebSocket upgrade failed: " + e.getMessage(), false);
                 }
                 errorLog.log(Level.WARNING, "WebSocket handshake failed: " + e.getMessage(), e);
+            }
+            return;
+        }
+
+        // Check for Server-Sent Events request
+        if (sseEnabled && isSSERequest(headers)) {
+            try {
+                handleSSERequest(method, path, version, headers);
+            } catch (IOException e) {
+                errorLog.log(Level.WARNING, "SSE request failed: " + e.getMessage(), e);
             }
             return;
         }
@@ -1013,6 +1033,78 @@ class ProcessRequest implements Runnable {
         writer.write("\r\n");
         writer.write(response);
         writer.flush();
+    }
+
+    private boolean isSSERequest(Map<String, String> headers) {
+        String accept = headers.get("accept");
+        return accept != null && accept.contains("text/event-stream");
+    }
+
+    private void handleSSERequest(String method, String path, String version, Map<String, String> headers)
+            throws IOException {
+        if (!"GET".equalsIgnoreCase(method)) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                sendMethodNotAllowed(writer, version, "GET", false);
+            }
+            return;
+        }
+
+        String lastEventId = headers.get("last-event-id");
+
+        // Send SSE response headers
+        try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+             Writer writer = new OutputStreamWriter(outputStream)) {
+            writer.write(version + " 200 OK\r\n");
+            writer.write("Content-Type: text/event-stream; charset=utf-8\r\n");
+            writer.write("Cache-Control: no-cache\r\n");
+            writer.write("Connection: keep-alive\r\n");
+            writer.write("X-Accel-Buffering: no\r\n");
+            writer.write("Transfer-Encoding: chunked\r\n");
+            writer.write("\r\n");
+            writer.flush();
+        }
+
+        // Create SSE connection
+        String connectionId = requestId != null ? requestId : "sse-" + System.nanoTime();
+        SSEConnection sseConnection = new SSEConnectionImpl(connectionId, socket, sseHandler, lastEventId, metrics);
+
+        // Register with SSE manager
+        String topic = extractSSETopic(path);
+        boolean registered = sseManager.registerConnection(topic, sseConnection);
+
+        if (!registered) {
+            sseConnection.close();
+            return;
+        }
+
+        // Open and activate the connection
+        sseConnection.open();
+
+        if (config.isMetricsEnabled()) {
+            metrics.incrementCounter("sse_connections_established");
+        }
+
+        // Keep the connection open by waiting for it to close
+        // The connection will manage itself in its own virtual thread
+        while (!sseConnection.isClosed()) {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+
+        // Clean up when connection closes
+        sseManager.unregisterConnection(sseConnection);
+    }
+
+    private String extractSSETopic(String path) {
+        if (path.startsWith("/events/")) {
+            return path;
+        }
+        return "/events/default";
     }
 
     private boolean isWebSocketUpgradeRequest(String method, Map<String, String> headers) {
