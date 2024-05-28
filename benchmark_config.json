@@ -1,0 +1,93 @@
+{
+  "framework": "java-http-server",
+  "version": "1.0.0",
+  "language": "Java",
+  "language_version": "21",
+  "orm": "None",
+  "platform": "Java Virtual Threads",
+  "web_framework": "Custom HTTP Server",
+  "database_engine": "PostgreSQL",
+  "database_pool": "HikariCP",
+  "json_parser": "Manual (Optimized)",
+  "tests": [
+    {
+      "test_type": "json",
+      "endpoint": "/json",
+      "method": "GET",
+      "description": "JSON Serialization",
+      "expected_response": {
+        "message": "Hello, World!"
+      }
+    },
+    {
+      "test_type": "plaintext",
+      "endpoint": "/plaintext",
+      "method": "GET",
+      "description": "Plaintext Response",
+      "expected_response": "Hello, World!"
+    },
+    {
+      "test_type": "db",
+      "endpoint": "/db",
+      "method": "GET",
+      "description": "Single Database Query",
+      "expected_response_schema": {
+        "id": "integer",
+        "randomNumber": "integer"
+      }
+    },
+    {
+      "test_type": "queries",
+      "endpoint": "/queries?queries={count}",
+      "method": "GET",
+      "description": "Multiple Database Queries",
+      "parameter": "queries",
+      "default": 1,
+      "max": 500,
+      "expected_response_type": "array"
+    },
+    {
+      "test_type": "updates",
+      "endpoint": "/updates?queries={count}",
+      "method": "GET",
+      "description": "Database Updates",
+      "parameter": "queries",
+      "default": 1,
+      "max": 500,
+      "expected_response_type": "array"
+    },
+    {
+      "test_type": "fortunes",
+      "endpoint": "/fortunes",
+      "method": "GET",
+      "description": "Server-Side Template Rendering",
+      "expected_response_type": "html"
+    }
+  ],
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "name": "benchmarkdb",
+    "user": "benchmarkdbuser",
+    "pool_size": 200,
+    "min_idle": 5,
+    "max_lifetime_ms": 1800000
+  },
+  "performance_targets": {
+    "json_rps": 1000000,
+    "plaintext_rps": 5000000,
+    "db_single_rps": 50000,
+    "db_multiple_rps": 10000,
+    "updates_rps": 5000,
+    "fortunes_rps": 20000
+  },
+  "optimizations": [
+    "Virtual Threads (Java 21+)",
+    "Connection Pooling (HikariCP)",
+    "Prepared Statements",
+    "Direct Buffer Writes",
+    "Manual JSON Generation",
+    "Zero-Copy Where Possible",
+    "Keep-Alive Connection Reuse"
+  ]
+}
