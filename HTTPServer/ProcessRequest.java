@@ -370,6 +370,64 @@ class ProcessRequest implements Runnable {
             return;
         }
 
+        if (path.equals("/plaintext")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                TechEmpowerHandler.handlePlaintext(writer, version, keepAlive);
+            }
+            return;
+        }
+
+        if (path.equals("/json")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                TechEmpowerHandler.handleJson(writer, version, keepAlive);
+            }
+            return;
+        }
+
+        if (path.equals("/db")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                TechEmpowerHandler.handleSingleQuery(writer, version, keepAlive);
+            }
+            return;
+        }
+
+        if (path.startsWith("/queries")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                int queryCount = 1;
+                if (path.contains("?")) {
+                    String queryString = path.substring(path.indexOf("?") + 1);
+                    queryCount = TechEmpowerHandler.extractQueryCount(queryString);
+                }
+                TechEmpowerHandler.handleMultipleQueries(writer, version, queryCount, keepAlive);
+            }
+            return;
+        }
+
+        if (path.startsWith("/updates")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                int queryCount = 1;
+                if (path.contains("?")) {
+                    String queryString = path.substring(path.indexOf("?") + 1);
+                    queryCount = TechEmpowerHandler.extractQueryCount(queryString);
+                }
+                TechEmpowerHandler.handleUpdates(writer, version, queryCount, keepAlive);
+            }
+            return;
+        }
+
+        if (path.equals("/fortunes")) {
+            try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
+                 Writer writer = new OutputStreamWriter(outputStream)) {
+                TechEmpowerHandler.handleFortunes(writer, version, keepAlive);
+            }
+            return;
+        }
+
         if (path.startsWith("/api/")) {
             try (OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
                  Writer writer = new OutputStreamWriter(outputStream)) {
