@@ -22,6 +22,15 @@ public class HTTP2ConnectionLifecycleTest {
         decoder = new HPACKDecoder();
     }
 
+    private void writeFrameHeader(ByteBuffer buffer, int length, byte type, byte flags, int streamId) {
+        buffer.put((byte) ((length >> 16) & 0xFF));
+        buffer.put((byte) ((length >> 8) & 0xFF));
+        buffer.put((byte) (length & 0xFF));
+        buffer.put(type);
+        buffer.put(flags);
+        buffer.putInt(streamId);
+    }
+
     @Nested
     class PrefaceVerificationTests {
 
@@ -91,11 +100,8 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testSettingsFrameWithoutPayload() {
             ByteBuffer buffer = ByteBuffer.allocate(9);
-            buffer.putInt(0x000000); // Length: 0
-            buffer.put(4, (byte) 0x04); // Type: SETTINGS
-            buffer.put(5, (byte) 0x00); // Flags: no ACK
-            buffer.putInt(6, 0x00000000); // Stream ID: 0
-            buffer.position(0);
+            writeFrameHeader(buffer, 0, (byte) 0x04, (byte) 0x00, 0);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -106,11 +112,8 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testSettingsAckFrame() {
             ByteBuffer buffer = ByteBuffer.allocate(9);
-            buffer.putInt(0x000000); // Length: 0
-            buffer.put(4, (byte) 0x04); // Type: SETTINGS
-            buffer.put(5, (byte) 0x01); // Flags: ACK
-            buffer.putInt(6, 0x00000000); // Stream ID: 0
-            buffer.position(0);
+            writeFrameHeader(buffer, 0, (byte) 0x04, (byte) 0x01, 0);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -135,12 +138,9 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testPingFrame() {
             ByteBuffer buffer = ByteBuffer.allocate(17);
-            buffer.putInt(0x000008); // Length: 8 bytes
-            buffer.put(4, (byte) 0x06); // Type: PING
-            buffer.put(5, (byte) 0x00); // Flags: no ACK
-            buffer.putInt(6, 0x00000000); // Stream ID: 0
-            buffer.putLong(10, 0x0102030405060708L); // Opaque data
-            buffer.position(0);
+            writeFrameHeader(buffer, 8, (byte) 0x06, (byte) 0x00, 0);
+            buffer.putLong(0x0102030405060708L);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -151,12 +151,9 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testPingAckFrame() {
             ByteBuffer buffer = ByteBuffer.allocate(17);
-            buffer.putInt(0x000008); // Length: 8 bytes
-            buffer.put(4, (byte) 0x06); // Type: PING
-            buffer.put(5, (byte) 0x01); // Flags: ACK
-            buffer.putInt(6, 0x00000000); // Stream ID: 0
-            buffer.putLong(10, 0x0102030405060708L); // Opaque data
-            buffer.position(0);
+            writeFrameHeader(buffer, 8, (byte) 0x06, (byte) 0x01, 0);
+            buffer.putLong(0x0102030405060708L);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -165,17 +162,12 @@ public class HTTP2ConnectionLifecycleTest {
 
         @Test
         public void testPingOnlyOnConnectionLevel() {
-            // PING frames must be on stream 0
             ByteBuffer buffer = ByteBuffer.allocate(17);
-            buffer.putInt(0x000008); // Length: 8 bytes
-            buffer.put(4, (byte) 0x06); // Type: PING
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000001); // Stream ID: 1 (invalid for PING)
-            buffer.putLong(10, 0x0102030405060708L);
-            buffer.position(0);
+            writeFrameHeader(buffer, 8, (byte) 0x06, (byte) 0x00, 1);
+            buffer.putLong(0x0102030405060708L);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
-            // Frame is parsed but semantic validation would happen elsewhere
             assertThat(frame).isNotNull();
             assertThat(frame.getStreamId()).isEqualTo(1);
         }
@@ -183,12 +175,9 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testPingExactlyEightBytes() {
             ByteBuffer buffer = ByteBuffer.allocate(17);
-            buffer.putInt(0x000008); // Length: exactly 8 bytes
-            buffer.put(4, (byte) 0x06); // Type: PING
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000000); // Stream ID: 0
-            buffer.putLong(10, 0x0000000000000000L);
-            buffer.position(0);
+            writeFrameHeader(buffer, 8, (byte) 0x06, (byte) 0x00, 0);
+            buffer.putLong(0x0000000000000000L);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -202,13 +191,10 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testGoAwayWithNoError() {
             ByteBuffer buffer = ByteBuffer.allocate(17);
-            buffer.putInt(0x000008); // Length: 8 bytes
-            buffer.put(4, (byte) 0x07); // Type: GOAWAY
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000000); // Stream ID: 0
-            buffer.putInt(10, 0x00000005); // Last-Stream-ID: 5
-            buffer.putInt(14, 0x00000000); // Error code: NO_ERROR
-            buffer.position(0);
+            writeFrameHeader(buffer, 8, (byte) 0x07, (byte) 0x00, 0);
+            buffer.putInt(0x00000005);
+            buffer.putInt(0x00000000);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -218,13 +204,10 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testGoAwayWithErrorCode() {
             ByteBuffer buffer = ByteBuffer.allocate(17);
-            buffer.putInt(0x000008); // Length: 8 bytes
-            buffer.put(4, (byte) 0x07); // Type: GOAWAY
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000000); // Stream ID: 0
-            buffer.putInt(10, 0x00000001); // Last-Stream-ID: 1
-            buffer.putInt(14, 0x00000001); // Error code: PROTOCOL_ERROR
-            buffer.position(0);
+            writeFrameHeader(buffer, 8, (byte) 0x07, (byte) 0x00, 0);
+            buffer.putInt(0x00000001);
+            buffer.putInt(0x00000001);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -234,14 +217,11 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testGoAwayWithAdditionalData() {
             ByteBuffer buffer = ByteBuffer.allocate(30);
-            buffer.putInt(0x00000E); // Length: 14 bytes (8 header + 6 additional)
-            buffer.put(4, (byte) 0x07); // Type: GOAWAY
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000000); // Stream ID: 0
-            buffer.putInt(10, 0x00000000); // Last-Stream-ID: 0
-            buffer.putInt(14, 0x00000000); // Error code: NO_ERROR
-            buffer.put(18, new byte[]{1, 2, 3, 4, 5, 6}); // Debug data
-            buffer.position(0);
+            writeFrameHeader(buffer, 14, (byte) 0x07, (byte) 0x00, 0);
+            buffer.putInt(0x00000000);
+            buffer.putInt(0x00000000);
+            buffer.put(new byte[]{1, 2, 3, 4, 5, 6});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -250,19 +230,15 @@ public class HTTP2ConnectionLifecycleTest {
 
         @Test
         public void testGoAwayOnlyOnConnectionLevel() {
-            // GOAWAY must be on stream 0
             ByteBuffer buffer = ByteBuffer.allocate(17);
-            buffer.putInt(0x000008);
-            buffer.put(4, (byte) 0x07); // Type: GOAWAY
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000001); // Stream ID: 1 (invalid)
-            buffer.putInt(10, 0x00000000);
-            buffer.putInt(14, 0x00000000);
-            buffer.position(0);
+            writeFrameHeader(buffer, 8, (byte) 0x07, (byte) 0x00, 1);
+            buffer.putInt(0x00000000);
+            buffer.putInt(0x00000000);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
-            assertThat(frame.getStreamId()).isEqualTo(1); // Parser doesn't validate
+            assertThat(frame.getStreamId()).isEqualTo(1);
         }
 
         @Test
@@ -274,7 +250,6 @@ public class HTTP2ConnectionLifecycleTest {
                 streams.put(i, stream);
             }
 
-            // All streams should be open before GOAWAY
             for (HTTP2Stream stream : streams.values()) {
                 assertThat(stream.getState()).isEqualTo(HTTP2Stream.StreamState.OPEN);
             }
@@ -287,12 +262,9 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testRstStreamOnOpenStream() {
             ByteBuffer buffer = ByteBuffer.allocate(13);
-            buffer.putInt(0x000004); // Length: 4 bytes
-            buffer.put(4, (byte) 0x03); // Type: RST_STREAM
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.putInt(10, 0x00000000); // Error code: NO_ERROR
-            buffer.position(0);
+            writeFrameHeader(buffer, 4, (byte) 0x03, (byte) 0x00, 1);
+            buffer.putInt(0x00000000);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -306,12 +278,9 @@ public class HTTP2ConnectionLifecycleTest {
 
             for (int errorCode : errorCodes) {
                 ByteBuffer buffer = ByteBuffer.allocate(13);
-                buffer.putInt(0x000004);
-                buffer.put(4, (byte) 0x03);
-                buffer.put(5, (byte) 0x00);
-                buffer.putInt(6, 0x00000001);
-                buffer.putInt(10, errorCode);
-                buffer.position(0);
+                writeFrameHeader(buffer, 4, (byte) 0x03, (byte) 0x00, 1);
+                buffer.putInt(errorCode);
+                buffer.flip();
 
                 HTTP2Frame frame = frameParser.parseFrame(buffer);
                 assertThat(frame).isNotNull();
@@ -320,17 +289,12 @@ public class HTTP2ConnectionLifecycleTest {
 
         @Test
         public void testRstStreamCannotBeConnectionLevel() {
-            // RST_STREAM must be on a stream, not connection (stream ID must not be 0)
             ByteBuffer buffer = ByteBuffer.allocate(13);
-            buffer.putInt(0x000004);
-            buffer.put(4, (byte) 0x03);
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000000); // Stream ID: 0 (invalid for RST_STREAM)
-            buffer.putInt(10, 0x00000000);
-            buffer.position(0);
+            writeFrameHeader(buffer, 4, (byte) 0x03, (byte) 0x00, 0);
+            buffer.putInt(0x00000000);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
-            // Parser parses it, validation happens elsewhere
             assertThat(frame.getStreamId()).isEqualTo(0);
         }
     }
@@ -341,12 +305,9 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testConnectionLevelWindowUpdate() {
             ByteBuffer buffer = ByteBuffer.allocate(13);
-            buffer.putInt(0x000004); // Length: 4 bytes
-            buffer.put(4, (byte) 0x08); // Type: WINDOW_UPDATE
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000000); // Stream ID: 0 (connection)
-            buffer.putInt(10, 0x00001000); // Window increment: 4096
-            buffer.position(0);
+            writeFrameHeader(buffer, 4, (byte) 0x08, (byte) 0x00, 0);
+            buffer.putInt(0x00001000);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -356,12 +317,9 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testStreamLevelWindowUpdate() {
             ByteBuffer buffer = ByteBuffer.allocate(13);
-            buffer.putInt(0x000004);
-            buffer.put(4, (byte) 0x08);
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.putInt(10, 0x00008000); // Window increment: 32768
-            buffer.position(0);
+            writeFrameHeader(buffer, 4, (byte) 0x08, (byte) 0x00, 1);
+            buffer.putInt(0x00008000);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -371,12 +329,9 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testWindowUpdateExactlyFourBytes() {
             ByteBuffer buffer = ByteBuffer.allocate(13);
-            buffer.putInt(0x000004); // Must be exactly 4
-            buffer.put(4, (byte) 0x08);
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000001);
-            buffer.putInt(10, 0x7FFFFFFF); // Max increment
-            buffer.position(0);
+            writeFrameHeader(buffer, 4, (byte) 0x08, (byte) 0x00, 1);
+            buffer.putInt(0x7FFFFFFF);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -390,12 +345,9 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testContinuationFollowsHeaders() {
             ByteBuffer headersBuffer = ByteBuffer.allocate(20);
-            headersBuffer.putInt(0x000005); // Length: 5
-            headersBuffer.put(4, (byte) 0x01); // Type: HEADERS
-            headersBuffer.put(5, (byte) 0x00); // Flags: no END_HEADERS
-            headersBuffer.putInt(6, 0x00000001); // Stream ID: 1
-            headersBuffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            headersBuffer.position(0);
+            writeFrameHeader(headersBuffer, 5, (byte) 0x01, (byte) 0x00, 1);
+            headersBuffer.put(new byte[]{1, 2, 3, 4, 5});
+            headersBuffer.flip();
 
             HTTP2Frame headersFrame = frameParser.parseFrame(headersBuffer);
             assertThat(headersFrame).isNotNull();
@@ -405,12 +357,9 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testContinuationFrame() {
             ByteBuffer buffer = ByteBuffer.allocate(20);
-            buffer.putInt(0x000005); // Length: 5
-            buffer.put(4, (byte) 0x09); // Type: CONTINUATION
-            buffer.put(5, (byte) 0x04); // Flags: END_HEADERS
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.position(0);
+            writeFrameHeader(buffer, 5, (byte) 0x09, (byte) 0x04, 1);
+            buffer.put(new byte[]{1, 2, 3, 4, 5});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -421,20 +370,14 @@ public class HTTP2ConnectionLifecycleTest {
         @Test
         public void testMultipleContinuationFrames() {
             ByteBuffer buffer1 = ByteBuffer.allocate(20);
-            buffer1.putInt(0x000005);
-            buffer1.put(4, (byte) 0x09);
-            buffer1.put(5, (byte) 0x00); // No END_HEADERS
-            buffer1.putInt(6, 0x00000001);
-            buffer1.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer1.position(0);
+            writeFrameHeader(buffer1, 5, (byte) 0x09, (byte) 0x00, 1);
+            buffer1.put(new byte[]{1, 2, 3, 4, 5});
+            buffer1.flip();
 
             ByteBuffer buffer2 = ByteBuffer.allocate(20);
-            buffer2.putInt(0x000005);
-            buffer2.put(4, (byte) 0x09);
-            buffer2.put(5, (byte) 0x04); // END_HEADERS
-            buffer2.putInt(6, 0x00000001);
-            buffer2.put(10, new byte[]{6, 7, 8, 9, 10});
-            buffer2.position(0);
+            writeFrameHeader(buffer2, 5, (byte) 0x09, (byte) 0x04, 1);
+            buffer2.put(new byte[]{6, 7, 8, 9, 10});
+            buffer2.flip();
 
             HTTP2Frame frame1 = frameParser.parseFrame(buffer1);
             HTTP2Frame frame2 = frameParser.parseFrame(buffer2);
@@ -450,25 +393,21 @@ public class HTTP2ConnectionLifecycleTest {
 
         @Test
         public void testInitialConnectionState() {
-            // Connection starts in idle state
-            assertThat(true).isTrue(); // Placeholder for connection state tracking
+            assertThat(true).isTrue();
         }
 
         @Test
         public void testConnectionAfterPreface() {
-            // After preface exchange, connection is ready
             assertThat(true).isTrue();
         }
 
         @Test
         public void testConnectionAfterSettingsExchange() {
-            // After SETTINGS exchange, connection is fully established
             assertThat(true).isTrue();
         }
 
         @Test
         public void testConnectionAfterGoAway() {
-            // After GOAWAY, no new streams can be created
             assertThat(true).isTrue();
         }
     }
@@ -498,7 +437,7 @@ public class HTTP2ConnectionLifecycleTest {
             HTTP2Frame headersFrame = frameParser.createHeadersFrame(1, encoded, false, true);
 
             assertThat(headersFrame).isNotNull();
-            assertThat(headersFrame.isEndHeaders()).isTrue(); // Will be true due to createHeadersFrame
+            assertThat(headersFrame.isEndHeaders()).isTrue();
         }
     }
 }

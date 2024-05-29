@@ -20,6 +20,15 @@ public class HTTP2ProtocolErrorsTest {
         stream = new HTTP2Stream(1, 65535);
     }
 
+    private void writeFrameHeader(ByteBuffer buffer, int length, byte type, byte flags, int streamId) {
+        buffer.put((byte) ((length >> 16) & 0xFF));
+        buffer.put((byte) ((length >> 8) & 0xFF));
+        buffer.put((byte) (length & 0xFF));
+        buffer.put(type);
+        buffer.put(flags);
+        buffer.putInt(streamId);
+    }
+
     @Nested
     class SettingsFrameErrors {
 
@@ -27,12 +36,9 @@ public class HTTP2ProtocolErrorsTest {
         public void testSettingsFrameWithInvalidLength() {
             // SETTINGS frames must have length % 6 == 0
             ByteBuffer buffer = ByteBuffer.allocate(14);
-            buffer.putInt(0x000005); // Length: 5 (invalid)
-            buffer.put(4, (byte) 0x04); // Type: SETTINGS
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000000); // Stream ID: 0
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.position(0);
+            writeFrameHeader(buffer, 5, (byte) 0x04, (byte) 0x00, 0);
+            buffer.put(new byte[]{1, 2, 3, 4, 5});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             // Parser parses it; semantic validation happens elsewhere
@@ -44,11 +50,8 @@ public class HTTP2ProtocolErrorsTest {
         public void testSettingsFrameOnNonZeroStream() {
             // SETTINGS must be on stream 0
             ByteBuffer buffer = ByteBuffer.allocate(9);
-            buffer.putInt(0x000000);
-            buffer.put(4, (byte) 0x04);
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000001); // Stream ID: 1 (invalid)
-            buffer.position(0);
+            writeFrameHeader(buffer, 0, (byte) 0x04, (byte) 0x00, 1);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -58,13 +61,10 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testSettingsWithMaximumValues() {
             ByteBuffer buffer = ByteBuffer.allocate(15);
-            buffer.putInt(0x000006); // Length: 6 bytes (1 setting)
-            buffer.put(4, (byte) 0x04);
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000000);
-            buffer.putShort(10, (short) 0x0001); // HEADER_TABLE_SIZE
-            buffer.putInt(12, 0xFFFFFFFF); // Max value
-            buffer.position(0);
+            writeFrameHeader(buffer, 6, (byte) 0x04, (byte) 0x00, 0);
+            buffer.putShort((short) 0x0001); // HEADER_TABLE_SIZE
+            buffer.putInt(0xFFFFFFFF); // Max value
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -85,7 +85,7 @@ public class HTTP2ProtocolErrorsTest {
             buffer.put((byte) 0x00); // Type: DATA
             buffer.put((byte) 0x00); // Flags
             buffer.putInt(0x00000001); // Stream ID
-            buffer.position(0);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             // Parser accepts but may have incomplete payload
@@ -96,12 +96,9 @@ public class HTTP2ProtocolErrorsTest {
         public void testRstStreamWrongSize() {
             // RST_STREAM must be exactly 4 bytes
             ByteBuffer buffer = ByteBuffer.allocate(14);
-            buffer.putInt(0x000003); // Length: 3 (wrong)
-            buffer.put(4, (byte) 0x03); // Type: RST_STREAM
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000001);
-            buffer.put(10, new byte[]{1, 2, 3});
-            buffer.position(0);
+            writeFrameHeader(buffer, 3, (byte) 0x03, (byte) 0x00, 1);
+            buffer.put(new byte[]{1, 2, 3});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -112,12 +109,9 @@ public class HTTP2ProtocolErrorsTest {
         public void testPingWrongSize() {
             // PING must be exactly 8 bytes
             ByteBuffer buffer = ByteBuffer.allocate(14);
-            buffer.putInt(0x000007); // Length: 7 (wrong)
-            buffer.put(4, (byte) 0x06); // Type: PING
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000000);
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5, 6, 7});
-            buffer.position(0);
+            writeFrameHeader(buffer, 7, (byte) 0x06, (byte) 0x00, 0);
+            buffer.put(new byte[]{1, 2, 3, 4, 5, 6, 7});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -128,12 +122,9 @@ public class HTTP2ProtocolErrorsTest {
         public void testGoAwayWrongSize() {
             // GOAWAY must be at least 8 bytes
             ByteBuffer buffer = ByteBuffer.allocate(14);
-            buffer.putInt(0x000004); // Length: 4 (too small)
-            buffer.put(4, (byte) 0x07); // Type: GOAWAY
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000000);
-            buffer.put(10, new byte[]{1, 2, 3, 4});
-            buffer.position(0);
+            writeFrameHeader(buffer, 4, (byte) 0x07, (byte) 0x00, 0);
+            buffer.put(new byte[]{1, 2, 3, 4});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -146,12 +137,9 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testHeadersWithoutEndHeadersFlag() {
             ByteBuffer buffer = ByteBuffer.allocate(20);
-            buffer.putInt(0x000005); // Length: 5
-            buffer.put(4, (byte) 0x01); // Type: HEADERS
-            buffer.put(5, (byte) 0x00); // Flags: no END_HEADERS
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.position(0);
+            writeFrameHeader(buffer, 5, (byte) 0x01, (byte) 0x00, 1);
+            buffer.put(new byte[]{1, 2, 3, 4, 5});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -176,11 +164,8 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testEmptyHeaderBlock() {
             ByteBuffer buffer = ByteBuffer.allocate(9);
-            buffer.putInt(0x000000); // Length: 0
-            buffer.put(4, (byte) 0x01); // Type: HEADERS
-            buffer.put(5, (byte) 0x04); // Flags: END_HEADERS
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.position(0);
+            writeFrameHeader(buffer, 0, (byte) 0x01, (byte) 0x04, 1);
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -343,12 +328,9 @@ public class HTTP2ProtocolErrorsTest {
         public void testContinuationWithoutHeaders() {
             // CONTINUATION must follow HEADERS or PUSH_PROMISE with no END_HEADERS
             ByteBuffer buffer = ByteBuffer.allocate(20);
-            buffer.putInt(0x000005);
-            buffer.put(4, (byte) 0x09); // Type: CONTINUATION
-            buffer.put(5, (byte) 0x04); // Flags: END_HEADERS
-            buffer.putInt(6, 0x00000001);
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.position(0);
+            writeFrameHeader(buffer, 5, (byte) 0x09, (byte) 0x04, 1);
+            buffer.put(new byte[]{1, 2, 3, 4, 5});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -358,12 +340,9 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testContinuationWithoutEndHeaders() {
             ByteBuffer buffer = ByteBuffer.allocate(20);
-            buffer.putInt(0x000005);
-            buffer.put(4, (byte) 0x09);
-            buffer.put(5, (byte) 0x00); // No END_HEADERS
-            buffer.putInt(6, 0x00000001);
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.position(0);
+            writeFrameHeader(buffer, 5, (byte) 0x09, (byte) 0x00, 1);
+            buffer.put(new byte[]{1, 2, 3, 4, 5});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -378,12 +357,9 @@ public class HTTP2ProtocolErrorsTest {
         public void testDataFrameOnStreamZero() {
             // DATA frames must not be on stream 0
             ByteBuffer buffer = ByteBuffer.allocate(20);
-            buffer.putInt(0x000005);
-            buffer.put(4, (byte) 0x00); // Type: DATA
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000000); // Stream ID: 0 (invalid)
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.position(0);
+            writeFrameHeader(buffer, 5, (byte) 0x00, (byte) 0x00, 0);
+            buffer.put(new byte[]{1, 2, 3, 4, 5});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -394,12 +370,9 @@ public class HTTP2ProtocolErrorsTest {
         public void testHeadersFrameOnStreamZero() {
             // HEADERS frames must not be on stream 0
             ByteBuffer buffer = ByteBuffer.allocate(20);
-            buffer.putInt(0x000005);
-            buffer.put(4, (byte) 0x01); // Type: HEADERS
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000000); // Stream ID: 0 (invalid)
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.position(0);
+            writeFrameHeader(buffer, 5, (byte) 0x01, (byte) 0x00, 0);
+            buffer.put(new byte[]{1, 2, 3, 4, 5});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -410,12 +383,9 @@ public class HTTP2ProtocolErrorsTest {
         public void testPriorityFrameOnStreamZero() {
             // PRIORITY frames must not be on stream 0
             ByteBuffer buffer = ByteBuffer.allocate(14);
-            buffer.putInt(0x000005);
-            buffer.put(4, (byte) 0x02); // Type: PRIORITY
-            buffer.put(5, (byte) 0x00);
-            buffer.putInt(6, 0x00000000); // Stream ID: 0 (invalid)
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.position(0);
+            writeFrameHeader(buffer, 5, (byte) 0x02, (byte) 0x00, 0);
+            buffer.put(new byte[]{1, 2, 3, 4, 5});
+            buffer.flip();
 
             HTTP2Frame frame = frameParser.parseFrame(buffer);
             assertThat(frame).isNotNull();
