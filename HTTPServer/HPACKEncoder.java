@@ -85,11 +85,26 @@ public class HPACKEncoder {
     }
 
     public byte[] encode(Map<String, String> headers) {
-        ByteBuffer buffer = ByteBuffer.allocate(4096);
+        // Calculate required size: sum of (name + value) lengths plus overhead
+        // Each entry needs: 1 byte header + 2 bytes for length encoding (worst case) + name length + value length
+        int requiredSize = 0;
+        for (Map.Entry<String, String> header : headers.entrySet()) {
+            requiredSize += 1 + 2 + header.getKey().length() + 2 + header.getValue().length();
+        }
+        int bufferSize = Math.max(8192, requiredSize * 2);  // Double to be safe
+        ByteBuffer buffer = ByteBuffer.allocate(bufferSize);
 
         for (Map.Entry<String, String> header : headers.entrySet()) {
             String name = header.getKey();
             String value = header.getValue();
+
+            if (!buffer.hasRemaining()) {
+                // Buffer is full, need to expand
+                ByteBuffer newBuffer = ByteBuffer.allocate(buffer.capacity() * 2);
+                buffer.flip();
+                newBuffer.put(buffer);
+                buffer = newBuffer;
+            }
 
             encodeHeader(buffer, name, value);
         }
@@ -184,13 +199,13 @@ public class HPACKEncoder {
     }
 
     private void encodeIntegerContinuation(ByteBuffer buffer, int value, int prefixBits) {
-        int maxPrefix = (1 << prefixBits) - 1;
-        while (value >= maxPrefix) {
-            buffer.put((byte) maxPrefix);
-            value -= maxPrefix;
-            maxPrefix = 256;
+        // Encode the continuation bytes after the prefix byte
+        // Each byte has high bit set to indicate continuation, except the last
+        while (value >= 128) {
+            buffer.put((byte) (0x80 | (value & 0x7F)));
+            value >>= 7;
         }
-        buffer.put((byte) value);
+        buffer.put((byte) (value & 0x7F));
     }
 
     public byte[] encodeInteger(int value, int prefixBits) {
@@ -201,11 +216,7 @@ public class HPACKEncoder {
         } else {
             buffer.put((byte) maxPrefix);
             value -= maxPrefix;
-            while (value >= 128) {
-                buffer.put((byte) (0x80 | (value % 128)));
-                value /= 128;
-            }
-            buffer.put((byte) value);
+            encodeIntegerContinuation(buffer, value, prefixBits);
         }
         buffer.flip();
         byte[] result = new byte[buffer.remaining()];

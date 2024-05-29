@@ -148,6 +148,9 @@ public class HPACKDecoder {
     }
 
     public String decodeString(ByteBuffer buffer) {
+        if (!buffer.hasRemaining()) {
+            return "";
+        }
         byte b = buffer.get();
         boolean huffmanEncoded = (b & 0x80) == 0x80;
         int length = b & 0x7F;
@@ -155,7 +158,7 @@ public class HPACKDecoder {
         if (length == 127) {
             int m = 0;
             int additionalLength = 0;
-            while (true) {
+            while (buffer.hasRemaining()) {
                 b = buffer.get();
                 additionalLength += (b & 0x7F) << m;
                 if ((b & 0x80) == 0) {
@@ -164,6 +167,11 @@ public class HPACKDecoder {
                 m += 7;
             }
             length = 127 + additionalLength;
+        }
+
+        // Safety check: ensure we have enough bytes
+        if (buffer.remaining() < length) {
+            throw new IllegalArgumentException("Not enough bytes to read string of length " + length);
         }
 
         byte[] bytes = new byte[length];
