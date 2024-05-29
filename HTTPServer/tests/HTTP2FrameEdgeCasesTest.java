@@ -252,8 +252,10 @@ public class HTTP2FrameEdgeCasesTest {
         @Test
         public void testIncompleteHeader() {
             ByteBuffer buffer = ByteBuffer.allocate(5); // Less than 9 byte header
-            buffer.putInt(0x000005); // Length: 5 bytes
-            buffer.put(4, (byte) 0x00); // Type: DATA (incomplete)
+            buffer.put((byte) 0x00);
+            buffer.put((byte) 0x00);
+            buffer.put((byte) 0x05); // Length: 5 bytes
+            buffer.put((byte) 0x00); // Type: DATA (incomplete)
             buffer.position(0);
 
             HTTP2Frame frame = parser.parseFrame(buffer);
@@ -263,11 +265,14 @@ public class HTTP2FrameEdgeCasesTest {
         @Test
         public void testIncompletePayload() {
             ByteBuffer buffer = ByteBuffer.allocate(15);
-            buffer.putInt(0x000010); // Length: 16 bytes
-            buffer.put(4, (byte) 0x00); // Type: DATA
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.put(10, new byte[]{1, 2, 3, 4}); // Only 4 bytes, need 16
+            buffer.put((byte) 0x00);
+            buffer.put((byte) 0x00);
+            buffer.put((byte) 0x10); // Length: 16 bytes
+            buffer.put((byte) 0x00); // Type: DATA
+            buffer.put((byte) 0x00); // Flags: none
+            buffer.putInt(0x00000001); // Stream ID: 1
+            buffer.put(new byte[]{1, 2, 3, 4}); // Only 4 bytes, need 16
+            buffer.position(0);
             buffer.limit(14);
             buffer.position(0);
 
@@ -362,10 +367,15 @@ public class HTTP2FrameEdgeCasesTest {
         public void testParseResetsPositionOnError() {
             ByteBuffer buffer = ByteBuffer.allocate(30);
             // Invalid frame
-            buffer.putInt(0, 0x1000000); // Oversized length
-            buffer.put(4, (byte) 0x00); // Type: DATA
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
+            buffer.put(0, (byte) 0x10);
+            buffer.put(1, (byte) 0x00);
+            buffer.put(2, (byte) 0x00); // Oversized length
+            buffer.put(3, (byte) 0x00); // Type: DATA
+            buffer.put(4, (byte) 0x00); // Flags: none
+            buffer.put(5, (byte) 0x00);
+            buffer.put(6, (byte) 0x00);
+            buffer.put(7, (byte) 0x00);
+            buffer.put(8, (byte) 0x01); // Stream ID: 1
             buffer.position(0);
             int initialPosition = buffer.position();
 

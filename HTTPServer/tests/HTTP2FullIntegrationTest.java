@@ -386,7 +386,9 @@ public class HTTP2FullIntegrationTest {
 
             // Send GOAWAY
             ByteBuffer buffer = ByteBuffer.allocate(17);
-            buffer.putInt(0x000008);
+            buffer.put((byte) 0x00);
+            buffer.put((byte) 0x00);
+            buffer.put((byte) 0x08); // Length: 8
             buffer.put((byte) 0x07); // GOAWAY
             buffer.put((byte) 0x00);
             buffer.putInt(1); // Last stream ID
