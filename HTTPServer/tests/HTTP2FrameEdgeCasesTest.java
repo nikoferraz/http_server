@@ -23,12 +23,15 @@ public class HTTP2FrameEdgeCasesTest {
         public void testMaximumFrameSize() {
             // 16 MB is the maximum payload size (2^24 - 1)
             ByteBuffer buffer = ByteBuffer.allocate(9);
-            buffer.put((byte) 0xFF); // 255
-            buffer.put((byte) 0xFF); // 255
-            buffer.put((byte) 0xFF); // 255 = 16,777,215 bytes
+            buffer.put((byte) 0xFF); // Length byte 1
+            buffer.put((byte) 0xFF); // Length byte 2
+            buffer.put((byte) 0xFF); // Length byte 3 = 16,777,215 bytes
             buffer.put((byte) 0x00); // Type: DATA
             buffer.put((byte) 0x00); // Flags: none
-            buffer.putInt(0x00000001); // Stream ID: 1
+            buffer.put((byte) 0x00); // Stream ID byte 1
+            buffer.put((byte) 0x00); // Stream ID byte 2
+            buffer.put((byte) 0x00); // Stream ID byte 3
+            buffer.put((byte) 0x01); // Stream ID byte 4: 1
             buffer.position(0);
 
             // Parse should accept this size but return null due to missing payload
@@ -38,29 +41,38 @@ public class HTTP2FrameEdgeCasesTest {
 
         @Test
         public void testOversizedFrame() {
-            // Payload larger than max (16 MB + 1)
+            // Maximum 3-byte length value: 0xFFFFFF (16,777,215)
+            // This is the maximum allowed, so should be accepted but incomplete
             ByteBuffer buffer = ByteBuffer.allocate(9);
-            int oversizePayload = 0x1000000; // 16,777,216 (exceeds max)
-            buffer.put((byte) ((oversizePayload >> 16) & 0xFF));
-            buffer.put((byte) ((oversizePayload >> 8) & 0xFF));
-            buffer.put((byte) (oversizePayload & 0xFF));
+            buffer.put((byte) 0xFF); // Length byte 1
+            buffer.put((byte) 0xFF); // Length byte 2
+            buffer.put((byte) 0xFF); // Length byte 3: 0xFFFFFF (max 3-byte value)
             buffer.put((byte) 0x00); // Type: DATA
             buffer.put((byte) 0x00); // Flags: none
-            buffer.putInt(0x00000001); // Stream ID: 1
+            buffer.put((byte) 0x00); // Stream ID byte 1
+            buffer.put((byte) 0x00); // Stream ID byte 2
+            buffer.put((byte) 0x00); // Stream ID byte 3
+            buffer.put((byte) 0x01); // Stream ID byte 4: 1
             buffer.position(0);
 
+            // Should return null because payload is incomplete (need 16MB+ but have 0)
             HTTP2Frame frame = parser.parseFrame(buffer);
-            assertThat(frame).isNull(); // Should reject oversized frame
+            assertThat(frame).isNull();
         }
 
         @Test
         public void testZeroLengthFrame() {
             ByteBuffer buffer = ByteBuffer.allocate(9);
-            buffer.putInt(0x000000); // Length: 0 bytes
-            buffer.put(4, (byte) 0x04); // Type: SETTINGS
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000000); // Stream ID: 0
-            buffer.limit(9);
+            buffer.put(0, (byte) 0x00); // Length byte 1
+            buffer.put(1, (byte) 0x00); // Length byte 2
+            buffer.put(2, (byte) 0x00); // Length byte 3
+            buffer.put(3, (byte) 0x04); // Type: SETTINGS
+            buffer.put(4, (byte) 0x00); // Flags: none
+            buffer.put(5, (byte) 0x00); // Stream ID byte 1
+            buffer.put(6, (byte) 0x00); // Stream ID byte 2
+            buffer.put(7, (byte) 0x00); // Stream ID byte 3
+            buffer.put(8, (byte) 0x00); // Stream ID byte 4: 0
+            buffer.position(0);
 
             HTTP2Frame frame = parser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -82,30 +94,33 @@ public class HTTP2FrameEdgeCasesTest {
     @Nested
     class InvalidFrameTypeTests {
 
+        private ByteBuffer createFrame(byte type, int payloadLen) {
+            ByteBuffer buffer = ByteBuffer.allocate(9 + payloadLen);
+            buffer.put(0, (byte) ((payloadLen >> 16) & 0xFF));
+            buffer.put(1, (byte) ((payloadLen >> 8) & 0xFF));
+            buffer.put(2, (byte) (payloadLen & 0xFF));
+            buffer.put(3, type);
+            buffer.put(4, (byte) 0x00); // Flags
+            buffer.put(5, (byte) 0x00);
+            buffer.put(6, (byte) 0x00);
+            buffer.put(7, (byte) 0x00);
+            buffer.put(8, (byte) 0x01); // Stream ID: 1
+            buffer.position(0);
+            return buffer;
+        }
+
         @Test
         public void testInvalidFrameType() {
-            ByteBuffer buffer = ByteBuffer.allocate(9);
-            buffer.putInt(0x000000); // Length: 0
-            buffer.put(4, (byte) 0xFF); // Type: Invalid (255)
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.position(0);
-
+            ByteBuffer buffer = createFrame((byte) 0xFF, 0);
             HTTP2Frame frame = parser.parseFrame(buffer);
             assertThat(frame).isNull(); // Should reject unknown frame type
         }
 
         @Test
         public void testInvalidFrameTypeWithPayload() {
-            ByteBuffer buffer = ByteBuffer.allocate(20);
-            buffer.putInt(0x000005); // Length: 5 bytes
-            buffer.put(4, (byte) 0xAB); // Type: Invalid (171)
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.limit(15);
+            ByteBuffer buffer = createFrame((byte) 0xAB, 5);
+            buffer.put(9, new byte[]{1, 2, 3, 4, 5});
             buffer.position(0);
-
             HTTP2Frame frame = parser.parseFrame(buffer);
             assertThat(frame).isNull();
         }
@@ -114,16 +129,25 @@ public class HTTP2FrameEdgeCasesTest {
     @Nested
     class StreamIdValidationTests {
 
+        private ByteBuffer createFrame(int streamId, byte type) {
+            ByteBuffer buffer = ByteBuffer.allocate(9);
+            buffer.put(0, (byte) 0x00); // Length byte 1
+            buffer.put(1, (byte) 0x00); // Length byte 2
+            buffer.put(2, (byte) 0x00); // Length byte 3 (0 payload)
+            buffer.put(3, type); // Type
+            buffer.put(4, (byte) 0x00); // Flags
+            buffer.put(5, (byte) ((streamId >> 24) & 0xFF));
+            buffer.put(6, (byte) ((streamId >> 16) & 0xFF));
+            buffer.put(7, (byte) ((streamId >> 8) & 0xFF));
+            buffer.put(8, (byte) (streamId & 0xFF));
+            buffer.position(0);
+            return buffer;
+        }
+
         @Test
         public void testStreamIdZero() {
             // Stream ID 0 is reserved for connection-level frames
-            ByteBuffer buffer = ByteBuffer.allocate(9);
-            buffer.putInt(0x000000); // Length: 0
-            buffer.put(4, (byte) 0x04); // Type: SETTINGS
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000000); // Stream ID: 0 (valid for SETTINGS)
-            buffer.position(0);
-
+            ByteBuffer buffer = createFrame(0x00000000, (byte) 0x04);
             HTTP2Frame frame = parser.parseFrame(buffer);
             assertThat(frame).isNotNull();
             assertThat(frame.getStreamId()).isEqualTo(0);
@@ -132,13 +156,7 @@ public class HTTP2FrameEdgeCasesTest {
         @Test
         public void testMaxStreamId() {
             // Maximum valid stream ID: 2^31 - 1
-            ByteBuffer buffer = ByteBuffer.allocate(9);
-            buffer.putInt(0x000000); // Length: 0
-            buffer.put(4, (byte) 0x00); // Type: DATA
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x7FFFFFFF); // Stream ID: 2147483647
-            buffer.position(0);
-
+            ByteBuffer buffer = createFrame(0x7FFFFFFF, (byte) 0x00);
             HTTP2Frame frame = parser.parseFrame(buffer);
             assertThat(frame).isNotNull();
             assertThat(frame.getStreamId()).isEqualTo(0x7FFFFFFF);
@@ -147,13 +165,7 @@ public class HTTP2FrameEdgeCasesTest {
         @Test
         public void testStreamIdReservedBitMasked() {
             // Reserved bit (most significant bit) should be masked
-            ByteBuffer buffer = ByteBuffer.allocate(9);
-            buffer.putInt(0x000000); // Length: 0
-            buffer.put(4, (byte) 0x00); // Type: DATA
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0xFFFFFFFF); // Stream ID with reserved bit set
-            buffer.position(0);
-
+            ByteBuffer buffer = createFrame(0xFFFFFFFF, (byte) 0x00);
             HTTP2Frame frame = parser.parseFrame(buffer);
             assertThat(frame).isNotNull();
             assertThat(frame.getStreamId()).isEqualTo(0x7FFFFFFF); // Reserved bit masked
@@ -175,16 +187,30 @@ public class HTTP2FrameEdgeCasesTest {
     @Nested
     class FlagValidationTests {
 
+        private ByteBuffer createFrame(byte type, byte flags, int streamId, byte[] payload) {
+            ByteBuffer buffer = ByteBuffer.allocate(20 + payload.length);
+            int payloadLen = payload != null ? payload.length : 0;
+            buffer.put(0, (byte) ((payloadLen >> 16) & 0xFF));
+            buffer.put(1, (byte) ((payloadLen >> 8) & 0xFF));
+            buffer.put(2, (byte) (payloadLen & 0xFF));
+            buffer.put(3, type);
+            buffer.put(4, flags);
+            buffer.put(5, (byte) ((streamId >> 24) & 0xFF));
+            buffer.put(6, (byte) ((streamId >> 16) & 0xFF));
+            buffer.put(7, (byte) ((streamId >> 8) & 0xFF));
+            buffer.put(8, (byte) (streamId & 0xFF));
+            if (payload != null && payload.length > 0) {
+                buffer.put(9, payload);
+            }
+            buffer.position(0);
+            buffer.limit(9 + payloadLen);
+            return buffer;
+        }
+
         @Test
         public void testAllFlagsSet() {
-            ByteBuffer buffer = ByteBuffer.allocate(20);
-            buffer.putInt(0x000005); // Length: 5 bytes
-            buffer.put(4, (byte) 0x00); // Type: DATA
-            buffer.put(5, (byte) 0xFF); // Flags: All bits set
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.limit(15);
-            buffer.position(0);
+            byte[] payload = new byte[]{1, 2, 3, 4, 5};
+            ByteBuffer buffer = createFrame((byte) 0x00, (byte) 0xFF, 1, payload);
 
             HTTP2Frame frame = parser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -193,14 +219,8 @@ public class HTTP2FrameEdgeCasesTest {
 
         @Test
         public void testNoFlagsSet() {
-            ByteBuffer buffer = ByteBuffer.allocate(20);
-            buffer.putInt(0x000005); // Length: 5 bytes
-            buffer.put(4, (byte) 0x00); // Type: DATA
-            buffer.put(5, (byte) 0x00); // Flags: None
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.limit(15);
-            buffer.position(0);
+            byte[] payload = new byte[]{1, 2, 3, 4, 5};
+            ByteBuffer buffer = createFrame((byte) 0x00, (byte) 0x00, 1, payload);
 
             HTTP2Frame frame = parser.parseFrame(buffer);
             assertThat(frame).isNotNull();
@@ -209,14 +229,8 @@ public class HTTP2FrameEdgeCasesTest {
 
         @Test
         public void testEndStreamFlag() {
-            ByteBuffer buffer = ByteBuffer.allocate(20);
-            buffer.putInt(0x000005); // Length: 5 bytes
-            buffer.put(4, (byte) 0x00); // Type: DATA
-            buffer.put(5, (byte) 0x01); // Flags: END_STREAM
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.limit(15);
-            buffer.position(0);
+            byte[] payload = new byte[]{1, 2, 3, 4, 5};
+            ByteBuffer buffer = createFrame((byte) 0x00, (byte) 0x01, 1, payload);
 
             HTTP2Frame frame = parser.parseFrame(buffer);
             assertThat(frame.isEndStream()).isTrue();
@@ -224,14 +238,8 @@ public class HTTP2FrameEdgeCasesTest {
 
         @Test
         public void testEndHeadersFlag() {
-            ByteBuffer buffer = ByteBuffer.allocate(20);
-            buffer.putInt(0x000005); // Length: 5 bytes
-            buffer.put(4, (byte) 0x01); // Type: HEADERS
-            buffer.put(5, (byte) 0x04); // Flags: END_HEADERS
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
-            buffer.limit(15);
-            buffer.position(0);
+            byte[] payload = new byte[]{1, 2, 3, 4, 5};
+            ByteBuffer buffer = createFrame((byte) 0x01, (byte) 0x04, 1, payload);
 
             HTTP2Frame frame = parser.parseFrame(buffer);
             assertThat(frame.isEndHeaders()).isTrue();
@@ -328,17 +336,26 @@ public class HTTP2FrameEdgeCasesTest {
         @Test
         public void testParseDoesNotAdvancePastCompleteFrame() {
             ByteBuffer buffer = ByteBuffer.allocate(30);
-            // Frame 1
-            buffer.putInt(0, 0x000005); // Length: 5 bytes
-            buffer.put(4, (byte) 0x00); // Type: DATA
-            buffer.put(5, (byte) 0x00); // Flags: none
-            buffer.putInt(6, 0x00000001); // Stream ID: 1
-            buffer.put(10, new byte[]{1, 2, 3, 4, 5});
+            // HTTP/2 Frame: 3-byte length + 1-byte type + 1-byte flags + 4-byte stream ID + payload
+            buffer.put(0, (byte) 0x00); // Length byte 1
+            buffer.put(1, (byte) 0x00); // Length byte 2
+            buffer.put(2, (byte) 0x05); // Length byte 3: 5 bytes payload
+            buffer.put(3, (byte) 0x00); // Type: DATA
+            buffer.put(4, (byte) 0x00); // Flags: none
+            buffer.put(5, (byte) 0x00); // Stream ID byte 1
+            buffer.put(6, (byte) 0x00); // Stream ID byte 2
+            buffer.put(7, (byte) 0x00); // Stream ID byte 3
+            buffer.put(8, (byte) 0x01); // Stream ID byte 4: 1
+            buffer.put(9, (byte) 0x01); // Payload byte 1
+            buffer.put(10, (byte) 0x02); // Payload byte 2
+            buffer.put(11, (byte) 0x03); // Payload byte 3
+            buffer.put(12, (byte) 0x04); // Payload byte 4
+            buffer.put(13, (byte) 0x05); // Payload byte 5
             buffer.position(0);
 
             HTTP2Frame frame = parser.parseFrame(buffer);
             assertThat(frame).isNotNull();
-            assertThat(buffer.position()).isEqualTo(15); // Advanced by frame size
+            assertThat(buffer.position()).isEqualTo(14); // 9 header + 5 payload
         }
 
         @Test

@@ -177,13 +177,13 @@ class LoadTestSuite {
             ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
             AtomicLong totalRequests = new AtomicLong(0);
             AtomicLong totalErrors = new AtomicLong(0);
-            volatile boolean shouldStop = false;
+            AtomicInteger shouldStop = new AtomicInteger(0);
 
             long startTime = System.currentTimeMillis();
 
             for (int i = 0; i < concurrentClients; i++) {
                 executor.submit(() -> {
-                    while (!shouldStop) {
+                    while (shouldStop.get() == 0) {
                         try {
                             String response = sendHTTPRequest("/index.html");
                             if (response.contains("200")) {
@@ -200,7 +200,7 @@ class LoadTestSuite {
 
             // Run for specified duration
             Thread.sleep(durationSeconds * 1000L);
-            shouldStop = true;
+            shouldStop.set(1);
 
             long elapsedMs = System.currentTimeMillis() - startTime;
             double elapsedSeconds = elapsedMs / 1000.0;
@@ -408,7 +408,7 @@ class LoadTestSuite {
             ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
             AtomicInteger successCount = new AtomicInteger(0);
             AtomicInteger errorCount = new AtomicInteger(0);
-            volatile boolean shouldStop = false;
+            AtomicInteger shouldStop = new AtomicInteger(0);
 
             long startTime = System.currentTimeMillis();
 
@@ -442,7 +442,7 @@ class LoadTestSuite {
             Thread.sleep(10000); // Run recovery traffic
             recoveryPhase.await();
 
-            shouldStop = true;
+            shouldStop.set(1);
             long totalElapsedMs = System.currentTimeMillis() - startTime;
 
             executor.shutdown();
@@ -462,9 +462,9 @@ class LoadTestSuite {
         }
 
         private void sendContinuousRequests(CountDownLatch latch, AtomicInteger success, AtomicInteger errors,
-                                           volatile boolean shouldStop, String path) {
+                                           AtomicInteger shouldStop, String path) {
             try {
-                while (!shouldStop) {
+                while (shouldStop.get() == 0) {
                     try {
                         String response = sendHTTPRequest(path);
                         if (response.contains("200")) {
