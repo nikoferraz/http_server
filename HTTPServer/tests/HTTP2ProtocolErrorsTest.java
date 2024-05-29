@@ -95,7 +95,7 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testRstStreamWrongSize() {
             // RST_STREAM must be exactly 4 bytes
-            ByteBuffer buffer = ByteBuffer.allocate(14);
+            ByteBuffer buffer = ByteBuffer.allocate(12);
             writeFrameHeader(buffer, 3, (byte) 0x03, (byte) 0x00, 1);
             buffer.put(new byte[]{1, 2, 3});
             buffer.flip();
@@ -108,7 +108,7 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testPingWrongSize() {
             // PING must be exactly 8 bytes
-            ByteBuffer buffer = ByteBuffer.allocate(14);
+            ByteBuffer buffer = ByteBuffer.allocate(16);
             writeFrameHeader(buffer, 7, (byte) 0x06, (byte) 0x00, 0);
             buffer.put(new byte[]{1, 2, 3, 4, 5, 6, 7});
             buffer.flip();
