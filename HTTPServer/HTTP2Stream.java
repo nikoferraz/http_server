@@ -72,15 +72,15 @@ public class HTTP2Stream {
         return receiverWindowSize;
     }
 
-    public void updateSenderWindow(int increment) {
+    public synchronized void updateSenderWindow(int increment) {
         senderWindowSize += increment;
     }
 
-    public void updateReceiverWindow(int increment) {
+    public synchronized void updateReceiverWindow(int increment) {
         receiverWindowSize += increment;
     }
 
-    public void receiveData(byte[] data) {
+    public synchronized void receiveData(byte[] data) {
         if (data == null || data.length == 0) {
             return;
         }
@@ -109,7 +109,7 @@ public class HTTP2Stream {
         return result;
     }
 
-    public void sendData(byte[] data) {
+    public synchronized void sendData(byte[] data) {
         if (data != null) {
             senderWindowSize -= data.length;
         }

@@ -211,11 +211,11 @@ public class HPACKDecoder {
 
         int dynamicIndex = index - STATIC_TABLE.length - 1;
         int count = 0;
-        for (LinkedList<String> values : dynamicTable.values()) {
-            if (dynamicIndex < values.size()) {
-                return new String[]{null, values.get(dynamicIndex)};
+        for (Map.Entry<String, LinkedList<String>> entry : dynamicTable.entrySet()) {
+            if (dynamicIndex < entry.getValue().size()) {
+                return new String[]{entry.getKey(), entry.getValue().get(dynamicIndex)};
             }
-            dynamicIndex -= values.size();
+            dynamicIndex -= entry.getValue().size();
         }
 
         return null;
@@ -232,10 +232,11 @@ public class HPACKDecoder {
 
         int dynamicIndex = index - STATIC_TABLE.length - 1;
         for (Map.Entry<String, LinkedList<String>> entry : dynamicTable.entrySet()) {
-            if (dynamicIndex < 1) {
+            int entrySize = entry.getValue().size();
+            if (dynamicIndex < entrySize) {
                 return entry.getKey();
             }
-            dynamicIndex--;
+            dynamicIndex -= entrySize;
         }
 
         return "";

@@ -148,13 +148,16 @@ public class HPACKEncoder {
             return;
         }
 
-        // No match - encode as literal without indexing
-        encodeLiteralWithoutIndexing(buffer, name, value);
+        // No match - encode as literal with incremental indexing (new name)
+        // Index 0 means literal new name
+        buffer.put((byte) 0x40);
+        encodeString(buffer, name);
+        encodeString(buffer, value);
         addToDynamicTable(name, value);
     }
 
     private void encodeIndexed(ByteBuffer buffer, int index) {
-        if (index < 128) {
+        if (index < 127) {
             buffer.put((byte) (0x80 | index));
         } else {
             buffer.put((byte) 0xFF);
@@ -163,7 +166,7 @@ public class HPACKEncoder {
     }
 
     private void encodeLiteralWithIncrementalIndexing(ByteBuffer buffer, int index, String value) {
-        if (index < 64) {
+        if (index < 63) {
             buffer.put((byte) (0x40 | index));
         } else {
             buffer.put((byte) 0x7F);
@@ -226,20 +229,28 @@ public class HPACKEncoder {
     }
 
     private int findDynamicTableEntry(String name, String value) {
-        LinkedList<String> values = dynamicTable.get(name);
-        if (values != null) {
+        int globalIndex = 0;
+        for (Map.Entry<String, LinkedList<String>> entry : dynamicTable.entrySet()) {
+            LinkedList<String> values = entry.getValue();
             for (int i = 0; i < values.size(); i++) {
-                if (values.get(i).equals(value)) {
-                    return i;
+                if (entry.getKey().equals(name) && values.get(i).equals(value)) {
+                    return globalIndex;
                 }
+                globalIndex++;
             }
         }
         return -1;
     }
 
     private int findDynamicTableName(String name) {
-        LinkedList<String> values = dynamicTable.get(name);
-        return values != null ? 0 : -1;
+        int currentIndex = 0;
+        for (Map.Entry<String, LinkedList<String>> entry : dynamicTable.entrySet()) {
+            if (entry.getKey().equals(name)) {
+                return currentIndex;
+            }
+            currentIndex += entry.getValue().size();
+        }
+        return -1;
     }
 
     private void addToDynamicTable(String name, String value) {
