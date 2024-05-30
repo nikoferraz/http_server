@@ -103,7 +103,13 @@ public class HPACKDecoder {
                 // Literal with incremental indexing
                 buffer.position(buffer.position() - 1);
                 int nameIndex = decodeInteger(buffer, 6);
-                String name = getTableEntryName(nameIndex);
+                String name;
+                if (nameIndex == 0) {
+                    // New name - decode as string
+                    name = decodeString(buffer);
+                } else {
+                    name = getTableEntryName(nameIndex);
+                }
                 String value = decodeString(buffer);
                 headers.put(name, value);
                 addToDynamicTable(name, value);
@@ -116,7 +122,13 @@ public class HPACKDecoder {
                 // Literal without indexing or never indexed
                 buffer.position(buffer.position() - 1);
                 int nameIndex = decodeInteger(buffer, 4);
-                String name = getTableEntryName(nameIndex);
+                String name;
+                if (nameIndex == 0) {
+                    // New name - decode as string
+                    name = decodeString(buffer);
+                } else {
+                    name = getTableEntryName(nameIndex);
+                }
                 String value = decodeString(buffer);
                 headers.put(name, value);
             }
