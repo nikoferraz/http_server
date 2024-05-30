@@ -35,7 +35,7 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testSettingsFrameWithInvalidLength() {
             // SETTINGS frames must have length % 6 == 0
-            ByteBuffer buffer = ByteBuffer.allocate(14);
+            ByteBuffer buffer = ByteBuffer.allocate(20);
             writeFrameHeader(buffer, 5, (byte) 0x04, (byte) 0x00, 0);
             buffer.put(new byte[]{1, 2, 3, 4, 5});
             buffer.flip();
@@ -49,7 +49,7 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testSettingsFrameOnNonZeroStream() {
             // SETTINGS must be on stream 0
-            ByteBuffer buffer = ByteBuffer.allocate(9);
+            ByteBuffer buffer = ByteBuffer.allocate(20);
             writeFrameHeader(buffer, 0, (byte) 0x04, (byte) 0x00, 1);
             buffer.flip();
 
@@ -60,7 +60,7 @@ public class HTTP2ProtocolErrorsTest {
 
         @Test
         public void testSettingsWithMaximumValues() {
-            ByteBuffer buffer = ByteBuffer.allocate(15);
+            ByteBuffer buffer = ByteBuffer.allocate(20);
             writeFrameHeader(buffer, 6, (byte) 0x04, (byte) 0x00, 0);
             buffer.putShort((short) 0x0001); // HEADER_TABLE_SIZE
             buffer.putInt(0xFFFFFFFF); // Max value
@@ -78,7 +78,7 @@ public class HTTP2ProtocolErrorsTest {
         public void testDataFrameExceedsMaxSize() {
             // Default max frame size is 16384
             int oversizePayload = 16385;
-            ByteBuffer buffer = ByteBuffer.allocate(9);
+            ByteBuffer buffer = ByteBuffer.allocate(20);
             buffer.put((byte) 0x00);
             buffer.put((byte) 0x40);
             buffer.put((byte) 0x01); // 16385 in 24-bit big-endian
@@ -95,7 +95,7 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testRstStreamWrongSize() {
             // RST_STREAM must be exactly 4 bytes
-            ByteBuffer buffer = ByteBuffer.allocate(12);
+            ByteBuffer buffer = ByteBuffer.allocate(20);
             writeFrameHeader(buffer, 3, (byte) 0x03, (byte) 0x00, 1);
             buffer.put(new byte[]{1, 2, 3});
             buffer.flip();
@@ -108,7 +108,7 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testPingWrongSize() {
             // PING must be exactly 8 bytes
-            ByteBuffer buffer = ByteBuffer.allocate(16);
+            ByteBuffer buffer = ByteBuffer.allocate(20);
             writeFrameHeader(buffer, 7, (byte) 0x06, (byte) 0x00, 0);
             buffer.put(new byte[]{1, 2, 3, 4, 5, 6, 7});
             buffer.flip();
@@ -121,7 +121,7 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testGoAwayWrongSize() {
             // GOAWAY must be at least 8 bytes
-            ByteBuffer buffer = ByteBuffer.allocate(14);
+            ByteBuffer buffer = ByteBuffer.allocate(20);
             writeFrameHeader(buffer, 4, (byte) 0x07, (byte) 0x00, 0);
             buffer.put(new byte[]{1, 2, 3, 4});
             buffer.flip();
@@ -163,7 +163,7 @@ public class HTTP2ProtocolErrorsTest {
 
         @Test
         public void testEmptyHeaderBlock() {
-            ByteBuffer buffer = ByteBuffer.allocate(9);
+            ByteBuffer buffer = ByteBuffer.allocate(20);
             writeFrameHeader(buffer, 0, (byte) 0x01, (byte) 0x04, 1);
             buffer.flip();
 
@@ -382,7 +382,7 @@ public class HTTP2ProtocolErrorsTest {
         @Test
         public void testPriorityFrameOnStreamZero() {
             // PRIORITY frames must not be on stream 0
-            ByteBuffer buffer = ByteBuffer.allocate(14);
+            ByteBuffer buffer = ByteBuffer.allocate(20);
             writeFrameHeader(buffer, 5, (byte) 0x02, (byte) 0x00, 0);
             buffer.put(new byte[]{1, 2, 3, 4, 5});
             buffer.flip();
