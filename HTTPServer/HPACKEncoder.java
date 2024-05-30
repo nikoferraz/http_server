@@ -190,7 +190,8 @@ public class HPACKEncoder {
     }
 
     public byte[] encodeString(String value) {
-        ByteBuffer buffer = ByteBuffer.allocate(value.length() + 10);
+        byte[] bytes = value.getBytes();
+        ByteBuffer buffer = ByteBuffer.allocate(bytes.length + 10);
         encodeString(buffer, value);
         buffer.flip();
         byte[] result = new byte[buffer.remaining()];
