@@ -332,12 +332,15 @@ public class HTTP2FullIntegrationTest {
 
             // CONTINUATION with END_HEADERS
             byte[] part2 = new byte[10];
-            ByteBuffer buffer = ByteBuffer.allocate(19);
-            buffer.putInt(10);
+            ByteBuffer buffer = ByteBuffer.allocate(20);
+            // Frame header: 3 bytes length
+            buffer.put((byte) 0x00);
+            buffer.put((byte) 0x00);
+            buffer.put((byte) 0x0A);  // Length = 10
             buffer.put((byte) 0x09); // CONTINUATION
             buffer.put((byte) 0x04); // END_HEADERS
-            buffer.putInt(1);
-            buffer.put(part2);
+            buffer.putInt(1);        // Stream ID
+            buffer.put(part2);       // Payload
             buffer.position(0);
 
             HTTP2Frame contFrame = frameParser.parseFrame(buffer);
