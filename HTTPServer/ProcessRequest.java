@@ -3,6 +3,7 @@ package HTTPServer;
 import java.io.*;
 import java.net.Socket;
 import java.net.URLConnection;
+import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -807,18 +808,37 @@ class ProcessRequest implements Runnable {
         auditLog.info(logInfo);
     }
 
-    private Path validateAndNormalizePath(String fileName, File webrootToUse) {
-        try {
-            if (fileName.contains("..")) {
-                System.err.println("Path traversal attempt detected: " + fileName);
-                return null;
-            }
+    private String sanitizeAndValidatePath(String fileName, File webrootToUse) throws IOException {
+        // Step 1: URL decode (handles %2e%2e, %252f, etc.)
+        String decoded = URLDecoder.decode(fileName, StandardCharsets.UTF_8);
 
-            Path requestedPath = Paths.get(webrootToUse.getCanonicalPath(), fileName).normalize();
+        // Step 2: Check for path traversal before canonicalization
+        if (decoded.contains("..")) {
+            errorLog.severe("Path traversal attempt detected (decoded): " + decoded);
+            return null;
+        }
+
+        // Step 3: Normalize path and check it stays within webroot
+        try {
+            Path requestedPath = Paths.get(webrootToUse.getCanonicalPath(), decoded).normalize();
             Path webrootPath = Paths.get(webrootToUse.getCanonicalPath()).normalize();
 
             if (!requestedPath.startsWith(webrootPath)) {
-                System.err.println("Path outside webroot: " + requestedPath);
+                errorLog.severe("Path traversal attempt detected (normalized): " + decoded);
+                return null;
+            }
+
+            return decoded;
+        } catch (Exception e) {
+            errorLog.severe("Invalid path: " + decoded);
+            return null;
+        }
+    }
+
+    private Path validateAndNormalizePath(String fileName, File webrootToUse) {
+        try {
+            String sanitized = sanitizeAndValidatePath(fileName, webrootToUse);
+            if (sanitized == null) {
                 return null;
             }
 
@@ -827,7 +847,7 @@ class ProcessRequest implements Runnable {
                 return null;
             }
 
-            return requestedPath;
+            return Paths.get(webrootToUse.getCanonicalPath(), sanitized).normalize();
         } catch (IOException e) {
             System.err.println("Error validating path: " + e.getMessage());
             return null;

@@ -45,7 +45,17 @@ public class AuthenticationManager {
     }
 
     private void initializeBasicAuth() {
-        basicAuthCredentials.put("admin", "password");
+        String authConfig = System.getenv("HTTP_BASIC_AUTH"); // Format: "user1:pass1,user2:pass2"
+        if (authConfig == null || authConfig.isEmpty()) {
+            return;
+        }
+
+        for (String pair : authConfig.split(",")) {
+            String[] parts = pair.split(":", 2);
+            if (parts.length == 2) {
+                basicAuthCredentials.put(parts[0].trim(), parts[1].trim());
+            }
+        }
     }
 
     private void initializeApiKeys() {

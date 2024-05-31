@@ -49,8 +49,8 @@ public class DatabaseConnectionPool {
             if (dbUser == null) {
                 dbUser = "benchmarkdbuser";
             }
-            if (dbPassword == null) {
-                dbPassword = "benchmarkdbpass";
+            if (dbPassword == null || dbPassword.isEmpty()) {
+                throw new IllegalStateException("DB_PASSWORD environment variable must be set");
             }
 
             initialize(dbUrl, dbUser, dbPassword, maxPoolSize);

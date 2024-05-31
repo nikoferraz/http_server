@@ -6,9 +6,11 @@ import java.util.*;
 public class HPACKDecoder {
 
     private static final int DEFAULT_MAX_TABLE_SIZE = 4096;
+    private static final int MAX_HEADER_LIST_SIZE = 8192; // 8KB
     private int maxTableSize;
     private Map<String, LinkedList<String>> dynamicTable;
     private int dynamicTableSize;
+    private int currentHeaderListSize = 0;
 
     private static final String[][] STATIC_TABLE = {
         {":authority", ""},
@@ -85,6 +87,7 @@ public class HPACKDecoder {
     }
 
     public Map<String, String> decode(byte[] data) {
+        currentHeaderListSize = 0; // Reset for each decode
         ByteBuffer buffer = ByteBuffer.wrap(data);
         Map<String, String> headers = new LinkedHashMap<>();
 
@@ -179,6 +182,15 @@ public class HPACKDecoder {
                 m += 7;
             }
             length = 127 + additionalLength;
+        }
+
+        // HPACK bomb protection
+        currentHeaderListSize += length;
+        if (currentHeaderListSize > MAX_HEADER_LIST_SIZE) {
+            throw new IllegalArgumentException(
+                "Header list size exceeds maximum (" + MAX_HEADER_LIST_SIZE + " bytes). " +
+                "Possible HPACK bomb attack."
+            );
         }
 
         // Safety check: ensure we have enough bytes

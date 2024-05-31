@@ -65,4 +65,27 @@ public class JsonUtil {
                    .replace("\"", "&quot;")
                    .replace("'", "&#39;");
     }
+
+    public static String escapeHtml(String input) {
+        if (input == null) return "";
+
+        StringBuilder output = new StringBuilder();
+        for (char c : input.toCharArray()) {
+            switch (c) {
+                case '<':  output.append("&lt;"); break;
+                case '>':  output.append("&gt;"); break;
+                case '"':  output.append("&quot;"); break;
+                case '\'': output.append("&#x27;"); break;
+                case '&':  output.append("&amp;"); break;
+                case '/':  output.append("&#x2F;"); break;
+                default:
+                    if (c < 32 || c > 126) {
+                        output.append("&#").append((int)c).append(";");
+                    } else {
+                        output.append(c);
+                    }
+            }
+        }
+        return output.toString();
+    }
 }

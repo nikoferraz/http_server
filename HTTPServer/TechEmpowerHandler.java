@@ -245,6 +245,7 @@ public class TechEmpowerHandler {
 
             writer.write(version + " 200 OK\r\n");
             writer.write("Content-Type: text/html; charset=utf-8\r\n");
+            writer.write("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'\r\n");
             writer.write("Content-Length: " + contentLength + "\r\n");
             writer.write("Connection: " + (keepAlive ? "keep-alive" : "close") + "\r\n");
             writer.write("Server: TechEmpower\r\n");

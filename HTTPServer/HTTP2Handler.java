@@ -162,14 +162,24 @@ public class HTTP2Handler {
         HTTP2Stream stream = getOrCreateStream(frame.getStreamId());
 
         byte[] payload = frame.getPayload();
-        stream.receiveData(payload);
 
-        connectionWindowSize -= payload.length;
-
-        if (stream.getReceiverWindowSize() < 0) {
-            sendRstStream(frame.getStreamId(), 3); // FLOW_CONTROL_ERROR
-            stream.reset(3);
+        // Check connection-level window BEFORE consuming
+        if (connectionWindowSize < payload.length) {
+            logger.severe("Connection flow control window exceeded");
+            sendGoAway(0, "Flow control window exceeded");
+            return;
         }
+
+        // Check stream-level window BEFORE consuming
+        if (stream.getReceiverWindowSize() < payload.length) {
+            logger.warning("Stream " + frame.getStreamId() + " flow control window exceeded");
+            sendRstStream(frame.getStreamId(), 3);
+            return;
+        }
+
+        // Now it's safe to decrement
+        connectionWindowSize -= payload.length;
+        stream.receiveData(payload);
 
         if (frame.isEndStream()) {
             stream.setEndStreamReceived(true);
